@@ -273,6 +273,78 @@ index c1a32ce532afa501fb19bdbcf6bcb0ec151ecd99..00000000000000000000000000000000
 -disturl "http://nodejs.org/dist"
 -target "12.14.1"
 -runtime "node"
+diff --git a/src/vs/base/browser/ui/scrollbar/horizontalScrollbar.ts b/src/vs/base/browser/ui/scrollbar/horizontalScrollbar.ts
+index 6e7f132e99f836a6080ed96f674d1d239abd34fa..09d9beea1fbd8cc294891e9f8a5ed6d37f912ae9 100644
+--- a/src/vs/base/browser/ui/scrollbar/horizontalScrollbar.ts
++++ b/src/vs/base/browser/ui/scrollbar/horizontalScrollbar.ts
+@@ -73,6 +73,10 @@ export class HorizontalScrollbar extends AbstractScrollbar {
+ 		this.slider.setLeft(sliderPosition);
+ 	}
+ 
++	public _updateSlider2(sliderPosition: number): void {
++		this.slider.setLeft(sliderPosition);
++	}
++
+ 	protected _renderDomNode(largeSize: number, smallSize: number): void {
+ 		this.domNode.setWidth(largeSize);
+ 		this.domNode.setHeight(smallSize);
+diff --git a/src/vs/base/browser/ui/scrollbar/scrollableElement.ts b/src/vs/base/browser/ui/scrollbar/scrollableElement.ts
+index 00bb9830d54ff63ee096b8695f09abb9b821f96a..819ae235ec383b751b81698374f34bfb843fed0a 100644
+--- a/src/vs/base/browser/ui/scrollbar/scrollableElement.ts
++++ b/src/vs/base/browser/ui/scrollbar/scrollableElement.ts
+@@ -148,9 +148,9 @@ export class MouseWheelClassifier {
+ export abstract class AbstractScrollableElement extends Widget {
+ 
+ 	private readonly _options: ScrollableElementResolvedOptions;
+-	protected readonly _scrollable: Scrollable;
++	public readonly _scrollable: Scrollable;
+ 	private readonly _verticalScrollbar: VerticalScrollbar;
+-	private readonly _horizontalScrollbar: HorizontalScrollbar;
++	public readonly _horizontalScrollbar: HorizontalScrollbar;
+ 	private readonly _domNode: HTMLElement;
+ 
+ 	private readonly _leftShadowDomNode: FastDomNode<HTMLElement> | null;
+@@ -423,7 +423,7 @@ export abstract class AbstractScrollableElement extends Widget {
+ 			}
+ 		}
+ 
+-		if (this._options.alwaysConsumeMouseWheel || this._shouldRender) {
++		if (!this._options.allowPropagation && (this._options.alwaysConsumeMouseWheel || this._shouldRender)) {
+ 			e.preventDefault();
+ 			e.stopPropagation();
+ 		}
+@@ -597,6 +597,7 @@ function resolveOptions(opts: ScrollableElementCreationOptions): ScrollableEleme
+ 		handleMouseWheel: (typeof opts.handleMouseWheel !== 'undefined' ? opts.handleMouseWheel : true),
+ 		flipAxes: (typeof opts.flipAxes !== 'undefined' ? opts.flipAxes : false),
+ 		alwaysConsumeMouseWheel: (typeof opts.alwaysConsumeMouseWheel !== 'undefined' ? opts.alwaysConsumeMouseWheel : false),
++		allowPropagation: (typeof opts.allowPropagation !== 'undefined' ? opts.allowPropagation : false),
+ 		scrollYToX: (typeof opts.scrollYToX !== 'undefined' ? opts.scrollYToX : false),
+ 		mouseWheelScrollSensitivity: (typeof opts.mouseWheelScrollSensitivity !== 'undefined' ? opts.mouseWheelScrollSensitivity : 1),
+ 		fastScrollSensitivity: (typeof opts.fastScrollSensitivity !== 'undefined' ? opts.fastScrollSensitivity : 5),
+diff --git a/src/vs/base/browser/ui/scrollbar/scrollableElementOptions.ts b/src/vs/base/browser/ui/scrollbar/scrollableElementOptions.ts
+index afb227be73b9f59589e2ce84d27edf0da6f0b979..f8c3f20d70c39d854b116a3878ee6236516456c3 100644
+--- a/src/vs/base/browser/ui/scrollbar/scrollableElementOptions.ts
++++ b/src/vs/base/browser/ui/scrollbar/scrollableElementOptions.ts
+@@ -40,6 +40,11 @@ export interface ScrollableElementCreationOptions {
+ 	 * Defaults to false.
+ 	 */
+ 	scrollYToX?: boolean;
++	/**
++	 * Allow propagation.
++	 * Defaults to false.
++	 */
++	allowPropagation?: boolean;
+ 	/**
+ 	 * Always consume mouse wheel events, even when scrolling is no longer possible.
+ 	 * Defaults to false.
+@@ -132,6 +137,7 @@ export interface ScrollableElementResolvedOptions {
+ 	flipAxes: boolean;
+ 	scrollYToX: boolean;
+ 	alwaysConsumeMouseWheel: boolean;
++	allowPropagation:boolean;
+ 	mouseWheelScrollSensitivity: number;
+ 	fastScrollSensitivity: number;
+ 	scrollPredominantAxis: boolean;
 diff --git a/src/vs/base/common/network.ts b/src/vs/base/common/network.ts
 index f475b10e5e81d5c2511d8d36ca5fa30a54bc415a..e9a30b2cd2a7848241d9a430c28faccb51efdb9b 100644
 --- a/src/vs/base/common/network.ts
@@ -516,6 +588,433 @@ index 0ef8b9dc81419b53b27cf111fb206d72ba56bada..75d2ab3276049115829a38b8b7afee44
  
  	// If no workspace is provided through the URL, check for config attribute from server
  	if (!foundWorkspace) {
+diff --git a/src/vs/editor/browser/widget/codeEditorWidget.ts b/src/vs/editor/browser/widget/codeEditorWidget.ts
+index 17539558c91ca797df2445fd5b119f74a2f18cfe..66951f315af2efa206cefa7a9ccc82e13bd2c9c8 100644
+--- a/src/vs/editor/browser/widget/codeEditorWidget.ts
++++ b/src/vs/editor/browser/widget/codeEditorWidget.ts
+@@ -55,6 +55,8 @@ import { WordOperations } from 'vs/editor/common/controller/cursorWordOperations
+ import { IViewModel } from 'vs/editor/common/viewModel/viewModel';
+ import { OutgoingViewModelEventKind } from 'vs/editor/common/viewModel/viewModelEventDispatcher';
+ 
++declare var wb_monaco: any;
++
+ let EDITOR_ID = 0;
+ 
+ export interface ICodeEditorWidgetOptions {
+@@ -77,23 +79,39 @@ export interface ICodeEditorWidgetOptions {
+ 	telemetryData?: object;
+ }
+ 
+-class ModelData {
++class ModelData extends Disposable{
+ 	public readonly model: ITextModel;
+ 	public readonly viewModel: ViewModel;
+ 	public readonly view: View;
+ 	public readonly hasRealView: boolean;
+ 	public readonly listenersToRemove: IDisposable[];
++	public disposeOnContentChange: IDisposable;
++	public disposeOnModelContentChange: IDisposable | null;
++	private readonly _onDidChangeModelContent: Emitter<IModelContentChangedEvent> = this._register(new Emitter<IModelContentChangedEvent>());
++	public readonly onDidChangeModelContent: Event<IModelContentChangedEvent> = this._onDidChangeModelContent.event;
++
++	constructor(model: ITextModel, viewModel: ViewModel, view: View, hasRealView: boolean, listenersToRemove: IDisposable[], disposeOnContentChange: IDisposable) {
++		super();
+ 
+-	constructor(model: ITextModel, viewModel: ViewModel, view: View, hasRealView: boolean, listenersToRemove: IDisposable[]) {
+ 		this.model = model;
+ 		this.viewModel = viewModel;
+ 		this.view = view;
+ 		this.hasRealView = hasRealView;
+ 		this.listenersToRemove = listenersToRemove;
++		this.disposeOnContentChange = disposeOnContentChange;
++		this.disposeOnModelContentChange = null
++		
+ 	}
+ 
+-	public dispose(): void {
++	public setOnDidContentChange(mdl: ITextModel): void{
++		this.disposeOnModelContentChange = mdl.onDidChangeContent((e) => this._onDidChangeModelContent.fire(e));
++	}
++
++	public _dispose(): void {
+ 		dispose(this.listenersToRemove);
++		this.disposeOnContentChange.dispose();
++		if(this.disposeOnModelContentChange)
++			this.disposeOnModelContentChange.dispose()
+ 		this.model.onBeforeDetached();
+ 		if (this.hasRealView) {
+ 			this.view.dispose();
+@@ -216,7 +234,7 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
+ 	protected readonly _actions: { [key: string]: editorCommon.IEditorAction; };
+ 
+ 	// --- Members logically associated to a model
+-	protected _modelData: ModelData | null;
++	public _modelData: ModelData | null;
+ 
+ 	protected readonly _instantiationService: IInstantiationService;
+ 	protected readonly _contextKeyService: IContextKeyService;
+@@ -1117,8 +1135,9 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
+ 		return true;
+ 	}
+ 
+-	public executeEdits(source: string | null | undefined, edits: IIdentifiedSingleEditOperation[], endCursorState?: ICursorStateComputer | Selection[]): boolean {
+-		if (!this._modelData) {
++	public executeEdits(source: string | null | undefined, edits: IIdentifiedSingleEditOperation[], endCursorState?: ICursorStateComputer | Selection[], modelData_? : ModelData): boolean {
++		const md = modelData_ || this._modelData;
++		if (!md) {
+ 			return false;
+ 		}
+ 		if (this._configuration.options.get(EditorOption.readOnly)) {
+@@ -1135,7 +1154,7 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
+ 			cursorStateComputer = endCursorState;
+ 		}
+ 
+-		this._modelData.viewModel.executeEdits(source, edits, cursorStateComputer);
++		md.viewModel.executeEdits(source, edits, cursorStateComputer);
+ 		return true;
+ 	}
+ 
+@@ -1168,8 +1187,9 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
+ 		return this._modelData.model.getLineDecorations(lineNumber, this._id, filterValidationDecorations(this._configuration.options));
+ 	}
+ 
+-	public deltaDecorations(oldDecorations: string[], newDecorations: IModelDeltaDecoration[]): string[] {
+-		if (!this._modelData) {
++	public deltaDecorations(oldDecorations: string[], newDecorations: IModelDeltaDecoration[], modelData_? : ModelData): string[] {
++		const md = modelData_ || this._modelData;
++		if (!md) {
+ 			return [];
+ 		}
+ 
+@@ -1177,7 +1197,7 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
+ 			return oldDecorations;
+ 		}
+ 
+-		return this._modelData.model.deltaDecorations(oldDecorations, newDecorations, this._id);
++		return md.model.deltaDecorations(oldDecorations, newDecorations, this._id);
+ 	}
+ 
+ 	public setDecorations(decorationTypeKey: string, decorationOptions: editorCommon.IDecorationOptions[]): void {
+@@ -1452,107 +1472,135 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
+ 			return;
+ 		}
+ 
++		let isReattach: boolean = false;
++		if(!wb_monaco.disabled && wb_monaco.hasPreviousModelData(model,this._id)){
++			isReattach = true
++		}
++		
+ 		const listenersToRemove: IDisposable[] = [];
+ 
+ 		this._domElement.setAttribute('data-mode-id', model.getLanguageIdentifier().language);
+-		this._configuration.setIsDominatedByLongLines(model.isDominatedByLongLines());
+-		this._configuration.setMaxLineNumber(model.getLineCount());
+-
+-		model.onBeforeAttached();
+-
+-		const viewModel = new ViewModel(
+-			this._id,
+-			this._configuration,
+-			model,
+-			DOMLineBreaksComputerFactory.create(),
+-			MonospaceLineBreaksComputerFactory.create(this._configuration.options),
+-			(callback) => dom.scheduleAtNextAnimationFrame(callback)
+-		);
+-
+-		listenersToRemove.push(model.onDidChangeDecorations((e) => this._onDidChangeModelDecorations.fire(e)));
+-		listenersToRemove.push(model.onDidChangeLanguage((e) => {
+-			this._domElement.setAttribute('data-mode-id', model.getLanguageIdentifier().language);
+-			this._onDidChangeModelLanguage.fire(e);
+-		}));
+-		listenersToRemove.push(model.onDidChangeLanguageConfiguration((e) => this._onDidChangeModelLanguageConfiguration.fire(e)));
+-		listenersToRemove.push(model.onDidChangeContent((e) => this._onDidChangeModelContent.fire(e)));
+-		listenersToRemove.push(model.onDidChangeOptions((e) => this._onDidChangeModelOptions.fire(e)));
+-		// Someone might destroy the model from under the editor, so prevent any exceptions by setting a null model
+-		listenersToRemove.push(model.onWillDispose(() => this.setModel(null)));
+-
+-		listenersToRemove.push(viewModel.onEvent((e) => {
+-			switch (e.kind) {
+-				case OutgoingViewModelEventKind.ContentSizeChanged:
+-					this._onDidContentSizeChange.fire(e);
+-					break;
+-				case OutgoingViewModelEventKind.FocusChanged:
+-					this._editorTextFocus.setValue(e.hasFocus);
+-					break;
+-				case OutgoingViewModelEventKind.ScrollChanged:
+-					this._onDidScrollChange.fire(e);
+-					break;
+-				case OutgoingViewModelEventKind.ViewZonesChanged:
+-					this._onDidChangeViewZones.fire();
+-					break;
+-				case OutgoingViewModelEventKind.ReadOnlyEditAttempt:
+-					this._onDidAttemptReadOnlyEdit.fire();
+-					break;
+-				case OutgoingViewModelEventKind.CursorStateChanged: {
+-					if (e.reachedMaxCursorCount) {
+-						this._notificationService.warn(nls.localize('cursors.maximum', "The number of cursors has been limited to {0}.", Cursor.MAX_CURSOR_COUNT));
+-					}
+-
+-					const positions: Position[] = [];
+-					for (let i = 0, len = e.selections.length; i < len; i++) {
+-						positions[i] = e.selections[i].getPosition();
++		
++		if(!isReattach){
++			
++			this._configuration.setIsDominatedByLongLines(model.isDominatedByLongLines());
++			this._configuration.setMaxLineNumber(model.getLineCount());
++			model.onBeforeAttached();
++			const viewModel = new ViewModel(
++				this._id,
++				this._configuration,
++				model,
++				DOMLineBreaksComputerFactory.create(),
++				MonospaceLineBreaksComputerFactory.create(this._configuration.options),
++				(callback) => dom.scheduleAtNextAnimationFrame(callback)
++			);
++			
++			listenersToRemove.push(model.onDidChangeDecorations((e) => this._onDidChangeModelDecorations.fire(e)));
++			listenersToRemove.push(model.onDidChangeLanguage((e) => {
++				this._domElement.setAttribute('data-mode-id', model.getLanguageIdentifier().language);
++				this._onDidChangeModelLanguage.fire(e);
++			}));
++			listenersToRemove.push(model.onDidChangeLanguageConfiguration((e) => this._onDidChangeModelLanguageConfiguration.fire(e)));
++			const disposeContentChange = model.onDidChangeContent((e) => this._onDidChangeModelContent.fire(e));
++			listenersToRemove.push(model.onDidChangeOptions((e) => this._onDidChangeModelOptions.fire(e)));
++			// Someone might destroy the model from under the editor, so prevent any exceptions by setting a null model
++			listenersToRemove.push(model.onWillDispose(() => this.setModel(null)));
++
++			listenersToRemove.push(viewModel.onEvent((e) => {
++				switch (e.kind) {
++					case OutgoingViewModelEventKind.ContentSizeChanged:
++						this._onDidContentSizeChange.fire(e);
++						break;
++					case OutgoingViewModelEventKind.FocusChanged:
++						this._editorTextFocus.setValue(e.hasFocus);
++						break;
++					case OutgoingViewModelEventKind.ScrollChanged:
++						this._onDidScrollChange.fire(e);
++						break;
++					case OutgoingViewModelEventKind.ViewZonesChanged:
++						this._onDidChangeViewZones.fire();
++						break;
++					case OutgoingViewModelEventKind.ReadOnlyEditAttempt:
++						this._onDidAttemptReadOnlyEdit.fire();
++						break;
++					case OutgoingViewModelEventKind.CursorStateChanged: {
++						if (e.reachedMaxCursorCount) {
++							this._notificationService.warn(nls.localize('cursors.maximum', "The number of cursors has been limited to {0}.", Cursor.MAX_CURSOR_COUNT));
++						}
++
++						const positions: Position[] = [];
++						for (let i = 0, len = e.selections.length; i < len; i++) {
++							positions[i] = e.selections[i].getPosition();
++						}
++
++						const e1: ICursorPositionChangedEvent = {
++							position: positions[0],
++							secondaryPositions: positions.slice(1),
++							reason: e.reason,
++							source: e.source
++						};
++						this._onDidChangeCursorPosition.fire(e1);
++
++						const e2: ICursorSelectionChangedEvent = {
++							selection: e.selections[0],
++							secondarySelections: e.selections.slice(1),
++							modelVersionId: e.modelVersionId,
++							oldSelections: e.oldSelections,
++							oldModelVersionId: e.oldModelVersionId,
++							source: e.source,
++							reason: e.reason
++						};
++						this._onDidChangeCursorSelection.fire(e2);
++
++						break;
+ 					}
+ 
+-					const e1: ICursorPositionChangedEvent = {
+-						position: positions[0],
+-						secondaryPositions: positions.slice(1),
+-						reason: e.reason,
+-						source: e.source
+-					};
+-					this._onDidChangeCursorPosition.fire(e1);
+-
+-					const e2: ICursorSelectionChangedEvent = {
+-						selection: e.selections[0],
+-						secondarySelections: e.selections.slice(1),
+-						modelVersionId: e.modelVersionId,
+-						oldSelections: e.oldSelections,
+-						oldModelVersionId: e.oldModelVersionId,
+-						source: e.source,
+-						reason: e.reason
+-					};
+-					this._onDidChangeCursorSelection.fire(e2);
+-
+-					break;
++				}
++			}));
++			
++			const [view, hasRealView] = this._createView(viewModel);
++			if (hasRealView) {
++				this._domElement.appendChild(view.domNode.domNode);
++				let keys = Object.keys(this._contentWidgets);
++				for (let i = 0, len = keys.length; i < len; i++) {
++					const widgetId = keys[i];
++					view.addContentWidget(this._contentWidgets[widgetId]);
+ 				}
+ 
++				keys = Object.keys(this._overlayWidgets);
++				for (let i = 0, len = keys.length; i < len; i++) {
++					const widgetId = keys[i];
++					view.addOverlayWidget(this._overlayWidgets[widgetId]);
++				}
++				view.render(false, true);
++				view.domNode.domNode.setAttribute('data-uri', model.uri.toString());
+ 			}
+-		}));
+ 
+-		const [view, hasRealView] = this._createView(viewModel);
+-		if (hasRealView) {
+-			this._domElement.appendChild(view.domNode.domNode);
+-
+-			let keys = Object.keys(this._contentWidgets);
+-			for (let i = 0, len = keys.length; i < len; i++) {
+-				const widgetId = keys[i];
+-				view.addContentWidget(this._contentWidgets[widgetId]);
+-			}
++			this._modelData = new ModelData(model, viewModel, view, hasRealView, listenersToRemove, disposeContentChange);
++			this._modelData.setOnDidContentChange(model);
++		}else{
++		   this._modelData  = wb_monaco.getPreviousModelData(model,this._id);
++			if(this._modelData){
++				const [view, hasRealView] = [this._modelData.view,this._modelData.hasRealView];
++				this._modelData.disposeOnContentChange = model.onDidChangeContent((e) => this._onDidChangeModelContent.fire(e));
++				if (hasRealView) {
++					wb_monaco.attachFirepad(this._modelData.model,this._id);
++					let keys = Object.keys(this._contentWidgets);
++					for (let i = 0, len = keys.length; i < len; i++) {
++						const widgetId = keys[i];
++						view.addContentWidget(this._contentWidgets[widgetId]);
++					}
+ 
+-			keys = Object.keys(this._overlayWidgets);
+-			for (let i = 0, len = keys.length; i < len; i++) {
+-				const widgetId = keys[i];
+-				view.addOverlayWidget(this._overlayWidgets[widgetId]);
++					keys = Object.keys(this._overlayWidgets);
++					for (let i = 0, len = keys.length; i < len; i++) {
++						const widgetId = keys[i];
++						view.addOverlayWidget(this._overlayWidgets[widgetId]);
++					}
++					view.render(false, true);
++					view.domNode.domNode.setAttribute('data-uri', model.uri.toString());
++				}
+ 			}
+-
+-			view.render(false, true);
+-			view.domNode.domNode.setAttribute('data-uri', model.uri.toString());
+ 		}
+-
+-		this._modelData = new ModelData(model, viewModel, view, hasRealView, listenersToRemove);
+ 	}
+ 
+ 	protected _createView(viewModel: ViewModel): [View, boolean] {
+@@ -1628,7 +1676,7 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
+ 		return [view, true];
+ 	}
+ 
+-	protected _postDetachModelCleanup(detachedModel: ITextModel | null): void {
++	public _postDetachModelCleanup(detachedModel: ITextModel | null): void {
+ 		if (detachedModel) {
+ 			detachedModel.removeAllDecorationsWithOwnerId(this._id);
+ 		}
+@@ -1639,17 +1687,25 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
+ 			return null;
+ 		}
+ 		const model = this._modelData.model;
+-		const removeDomNode = this._modelData.hasRealView ? this._modelData.view.domNode.domNode : null;
++		if(wb_monaco.disabled){
++			const removeDomNode = this._modelData.hasRealView ? this._modelData.view.domNode.domNode : null;
+ 
+-		this._modelData.dispose();
+-		this._modelData = null;
++			this._modelData._dispose();
++			this._modelData = null;
+ 
+-		this._domElement.removeAttribute('data-mode-id');
+-		if (removeDomNode && this._domElement.contains(removeDomNode)) {
+-			this._domElement.removeChild(removeDomNode);
+-		}
++			this._domElement.removeAttribute('data-mode-id');
++			if (removeDomNode && this._domElement.contains(removeDomNode)) {
++				this._domElement.removeChild(removeDomNode);
++			}
+ 
+-		return model;
++			return model;
++		}else{
++			this._modelData.disposeOnContentChange.dispose();
++			wb_monaco.detachFirepad(model, this._id);
++			this._modelData = null;
++			this._domElement.removeAttribute('data-mode-id');
++			return null;
++		}
+ 	}
+ 
+ 	private _registerDecorationType(key: string, options: editorCommon.IDecorationRenderOptions, parentTypeKey?: string): void {
+diff --git a/src/vs/editor/common/services/modelServiceImpl.ts b/src/vs/editor/common/services/modelServiceImpl.ts
+index b21a32c25dc633d6259cedfa02bfb6679fa8a162..6282b6f45a630df7376bd802489c150ae5aa7ec0 100644
+--- a/src/vs/editor/common/services/modelServiceImpl.ts
++++ b/src/vs/editor/common/services/modelServiceImpl.ts
+@@ -30,6 +30,8 @@ import { EditStackElement, isEditStackElement } from 'vs/editor/common/model/edi
+ import { Schemas } from 'vs/base/common/network';
+ import { SemanticTokensProviderStyling, toMultilineTokens2 } from 'vs/editor/common/services/semanticTokensProviderStyling';
+ 
++declare var wb_monaco: any;
++
+ export interface IEditorSemanticHighlightingOptions {
+ 	enabled: true | false | 'configuredByTheme';
+ }
+@@ -505,6 +507,7 @@ export class ModelServiceImpl extends Disposable implements IModelService {
+ 			return;
+ 		}
+ 		const model = modelData.model;
++		wb_monaco.destroyFirepad(model);
+ 		const sharesUndoRedoStack = (this._undoRedoService.getUriComparisonKey(model.uri) !== model.uri.toString());
+ 		let maintainUndoRedoStack = false;
+ 		let heapSize = 0;
+diff --git a/src/vs/editor/contrib/gotoSymbol/peek/referencesWidget.ts b/src/vs/editor/contrib/gotoSymbol/peek/referencesWidget.ts
+index 7c21c932e17b85cdae502b67628ff2d270b56360..654462e6083515562b20a1c82f41aab397acdc7e 100644
+--- a/src/vs/editor/contrib/gotoSymbol/peek/referencesWidget.ts
++++ b/src/vs/editor/contrib/gotoSymbol/peek/referencesWidget.ts
+@@ -36,6 +36,7 @@ import { IUndoRedoService } from 'vs/platform/undoRedo/common/undoRedo';
+ import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
+ import { KeyCode } from 'vs/base/common/keyCodes';
+ 
++declare var wb_monaco: any;
+ 
+ class DecorationsManager implements IDisposable {
+ 
+@@ -540,13 +541,16 @@ export class ReferenceWidget extends peekView.PeekViewWidget {
+ 		// show in editor
+ 		const model = ref.object;
+ 		if (model) {
++			const change = !(this._preview.getModel() === model.textEditorModel);
+ 			const scrollType = this._preview.getModel() === model.textEditorModel ? ScrollType.Smooth : ScrollType.Immediate;
+ 			const sel = Range.lift(reference.range).collapseToStart();
+ 			this._previewModelReference = ref;
+-			this._preview.setModel(model.textEditorModel);
++			(change ? this._preview.setModel(model.textEditorModel) : null);
+ 			this._preview.setSelection(sel);
+ 			this._preview.revealRangeInCenter(sel, scrollType);
+-		} else {
++			const mdl = this._preview.getModel();
++			(change &&  mdl? wb_monaco.loadSet.add(mdl.uri.path + "peek" + mdl.id) && wb_monaco.connectEditorToFirepad(this._preview, mdl.uri, "peek" + mdl.id) : null)
++        } else {
+ 			this._preview.setModel(this._previewNotAvailableMessage);
+ 			ref.dispose();
+ 		}
 diff --git a/src/vs/platform/environment/common/argv.ts b/src/vs/platform/environment/common/argv.ts
 index 2ac99a2120ec461703c2ff85da8b5379125c5d96..77450df65524b0daed61309614941195f5294c1d 100644
 --- a/src/vs/platform/environment/common/argv.ts
@@ -625,6 +1124,36 @@ index e7342348d46cbcafa1b301ca1373ce01c057e70f..408867d2d3b503b46363c5a853e047d3
 +		return results.reduce((flat, current) => flat.concat(current), []);
 +	}
  }
+diff --git a/src/vs/platform/files/common/fileService.ts b/src/vs/platform/files/common/fileService.ts
+index 2677be6e8fa6eb063b438b87a0e675b02f2a8fd0..b8dede46ed8bba270f53cab9d506bf26d70e64e5 100644
+--- a/src/vs/platform/files/common/fileService.ts
++++ b/src/vs/platform/files/common/fileService.ts
+@@ -21,6 +21,8 @@ import { Schemas } from 'vs/base/common/network';
+ import { readFileIntoStream } from 'vs/platform/files/common/io';
+ import { Iterable } from 'vs/base/common/iterator';
+ 
++declare var wb_monaco: any;
++
+ export class FileService extends Disposable implements IFileService {
+ 
+ 	declare readonly _serviceBrand: undefined;
+@@ -662,6 +664,7 @@ export class FileService extends Disposable implements IFileService {
+ 
+ 			// same provider: leverage rename() functionality
+ 			if (sourceProvider === targetProvider) {
++				wb_monaco.invalidate(source.path);
+ 				await sourceProvider.rename(source, target, { overwrite });
+ 
+ 				return mode;
+@@ -670,7 +673,7 @@ export class FileService extends Disposable implements IFileService {
+ 			// across providers: copy to target & delete at source
+ 			else {
+ 				await this.doMoveCopy(sourceProvider, source, targetProvider, target, 'copy', overwrite);
+-
++				wb_monaco.invalidate(source.path);
+ 				await this.del(source, { recursive: true });
+ 
+ 				return 'copy';
 diff --git a/src/vs/platform/product/common/product.ts b/src/vs/platform/product/common/product.ts
 index 798faa74ae825de7449b74609ed649912531ec0f..487abd285a42407f669ce5f5396423644f822a83 100644
 --- a/src/vs/platform/product/common/product.ts
@@ -1319,10 +1848,10 @@ index 0000000000000000000000000000000000000000..56331ff1fc32bbd82e769aaecb551e42
 +require('../../bootstrap-amd').load('vs/server/entry');
 diff --git a/src/vs/server/ipc.d.ts b/src/vs/server/ipc.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..33b28cf2d53746ee9c50c056ac2e087dcee0a4e2
+index 0000000000000000000000000000000000000000..a26d81c298fb5881e3931c3287f864811e834649
 --- /dev/null
 +++ b/src/vs/server/ipc.d.ts
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,132 @@
 +/**
 + * External interfaces for integration into code-server over IPC. No vs imports
 + * should be made in this file.
@@ -1401,6 +1930,7 @@ index 0000000000000000000000000000000000000000..33b28cf2d53746ee9c50c056ac2e087d
 +	readonly args: Args;
 +	readonly remoteAuthority: string;
 +	readonly startPath?: StartPath;
++	readonly userData: any
 +}
 +
 +export interface VscodeOptionsMessage extends VscodeOptions {
@@ -1456,7 +1986,7 @@ index 0000000000000000000000000000000000000000..33b28cf2d53746ee9c50c056ac2e087d
 +}
 diff --git a/src/vs/server/node/channel.ts b/src/vs/server/node/channel.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..609c4d1cb43f52f92906b901c14c790f4536468f
+index 0000000000000000000000000000000000000000..f445f823fa43a330176cd60c2d3e0e257ef89d92
 --- /dev/null
 +++ b/src/vs/server/node/channel.ts
 @@ -0,0 +1,360 @@
@@ -1705,7 +2235,7 @@ index 0000000000000000000000000000000000000000..609c4d1cb43f52f92906b901c14c790f
 +			pid: process.pid,
 +			connectionToken: this.connectionToken,
 +			appRoot: URI.file(this.environment.appRoot),
-+			settingsPath: this.environment.settingsResource,
++			settingsPath: this.environment.userRoamingDataHome,
 +			logsPath: URI.file(this.environment.logsPath),
 +			extensionsPath: URI.file(this.environment.extensionsPath!),
 +			extensionHostLogsPath: URI.file(path.join(this.environment.logsPath, 'extension-host')),
@@ -2901,6 +3431,42 @@ index 9e264fb33b9a282e3a5284bcd857e17a664107a7..a23a44a781cd1f9b7d432d79a46707c9
  import './mainThreadTunnelService';
  import './mainThreadAuthentication';
  import './mainThreadTimeline';
+diff --git a/src/vs/workbench/api/browser/mainThreadDocumentsAndEditors.ts b/src/vs/workbench/api/browser/mainThreadDocumentsAndEditors.ts
+index c92a58c2709f73e29b3ae63d23e9d992a127f0d0..d46644d0a19dd761e0897b2143a7838dbd2a5006 100644
+--- a/src/vs/workbench/api/browser/mainThreadDocumentsAndEditors.ts
++++ b/src/vs/workbench/api/browser/mainThreadDocumentsAndEditors.ts
+@@ -32,6 +32,8 @@ import { IUriIdentityService } from 'vs/workbench/services/uriIdentity/common/ur
+ import { IClipboardService } from 'vs/platform/clipboard/common/clipboardService';
+ import { IPathService } from 'vs/workbench/services/path/common/pathService';
+ 
++declare var wb_monaco: any;
++
+ namespace delta {
+ 
+ 	export function ofSets<T>(before: Set<T>, after: Set<T>): { removed: T[], added: T[] } {
+@@ -251,6 +253,7 @@ class MainThreadDocumentAndEditorStateComputer {
+ 					// candidate (which is the editor that has raised an widget focus event)
+ 					// in addition to the widget focus check
+ 					activeEditor = apiEditor.id;
++					wb_monaco.setActiveModel(model);
+ 				}
+ 			}
+ 		}
+@@ -270,10 +273,14 @@ class MainThreadDocumentAndEditorStateComputer {
+ 				for (const snapshot of editors.values()) {
+ 					if (candidate === snapshot.editor) {
+ 						activeEditor = snapshot.id;
++						wb_monaco.setActiveModel(candidate.getModel())
+ 					}
+ 				}
+ 			}
+ 		}
++		if(!activeEditor){
++			wb_monaco.setActiveModel(null)
++		}
+ 
+ 		// compute new state and compare against old
+ 		const newState = new DocumentAndEditorState(models, editors, activeEditor);
 diff --git a/src/vs/workbench/api/browser/mainThreadStorage.ts b/src/vs/workbench/api/browser/mainThreadStorage.ts
 index 7bc3904963bed2925f3640b6bd929347159dd3cf..c6db2368ae9eaca61889efcf3c49763c01ff7459 100644
 --- a/src/vs/workbench/api/browser/mainThreadStorage.ts
@@ -3144,8 +3710,177 @@ index ced2d815834e40a1543e80516472799075980733..dfcae73e8a042307600c67f163aa00ba
  }
  
  .monaco-workbench .activitybar > .content > .home-bar > .home-bar-icon-badge {
+diff --git a/src/vs/workbench/browser/parts/editor/editorAutoSave.ts b/src/vs/workbench/browser/parts/editor/editorAutoSave.ts
+index cc9d969be70ec3080439c1285599535e18eb1d2c..77142a38a7d605e35a9b1414fb12218e9794ce1d 100644
+--- a/src/vs/workbench/browser/parts/editor/editorAutoSave.ts
++++ b/src/vs/workbench/browser/parts/editor/editorAutoSave.ts
+@@ -14,6 +14,8 @@ import { withNullAsUndefined } from 'vs/base/common/types';
+ import { IWorkingCopyService, IWorkingCopy, WorkingCopyCapabilities } from 'vs/workbench/services/workingCopy/common/workingCopyService';
+ import { ILogService } from 'vs/platform/log/common/log';
+ 
++declare var wb_monaco: any;
++
+ export class EditorAutoSave extends Disposable implements IWorkbenchContribution {
+ 
+ 	// Auto save: after delay
+@@ -171,6 +173,7 @@ export class EditorAutoSave extends Disposable implements IWorkbenchContribution
+ 	}
+ 
+ 	private scheduleAutoSave(workingCopy: IWorkingCopy): void {
++		if (wb_monaco.suppressSave) return;
+ 		if (typeof this.autoSaveAfterDelay !== 'number') {
+ 			return; // auto save after delay must be enabled
+ 		}
+diff --git a/src/vs/workbench/browser/parts/editor/editorGroupView.ts b/src/vs/workbench/browser/parts/editor/editorGroupView.ts
+index 012c84479cfc56310357d8354fde3288c5dece80..9e2e3cebc8414a869f243148f7321d48bf80397d 100644
+--- a/src/vs/workbench/browser/parts/editor/editorGroupView.ts
++++ b/src/vs/workbench/browser/parts/editor/editorGroupView.ts
+@@ -5,6 +5,7 @@
+ 
+ import 'vs/css!./media/editorgroupview';
+ import { EditorGroup, IEditorOpenOptions, EditorCloseEvent, ISerializedEditorGroup, isSerializedEditorGroup } from 'vs/workbench/common/editor/editorGroup';
++import { isCodeEditor, isDiffEditor } from 'vs/editor/browser/editorBrowser';
+ import { EditorInput, EditorOptions, GroupIdentifier, SideBySideEditorInput, CloseDirection, IEditorCloseEvent, ActiveEditorDirtyContext, IEditorPane, EditorGroupEditorsCountContext, SaveReason, IEditorPartOptionsChangeEvent, EditorsOrder, IVisibleEditorPane, ActiveEditorStickyContext, ActiveEditorPinnedContext, Deprecated_EditorPinnedContext, Deprecated_EditorDirtyContext, EditorResourceAccessor } from 'vs/workbench/common/editor';
+ import { Event, Emitter, Relay } from 'vs/base/common/event';
+ import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
+@@ -53,6 +54,8 @@ import { ILogService } from 'vs/platform/log/common/log';
+ import { Codicon } from 'vs/base/common/codicons';
+ import { IFilesConfigurationService, AutoSaveMode } from 'vs/workbench/services/filesConfiguration/common/filesConfigurationService';
+ 
++declare var wb_monaco: any;
++
+ export class EditorGroupView extends Themable implements IEditorGroupView {
+ 
+ 	//#region factory
+@@ -511,7 +514,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
+ 	}
+ 
+ 	private onDidOpenEditor(editor: EditorInput): void {
+-
++		//if(!wb_monaco.flag3)return;
+ 		/* __GDPR__
+ 			"editorOpened" : {
+ 				"${include}": [
+@@ -883,7 +886,6 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
+ 	//#region openEditor()
+ 
+ 	async openEditor(editor: EditorInput, options?: EditorOptions, context?: OpenEditorContext): Promise<IEditorPane | null> {
+-
+ 		// Guard against invalid inputs
+ 		if (!editor) {
+ 			return null;
+@@ -990,7 +992,38 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
+ 			openEditorPromise = (async () => {
+ 				try {
+ 					const result = await this.editorControl.openEditor(editor, options, { newInGroup: context.isNew });
+-
++					
++					wb_monaco.currentGroup = this._group.id;
++					const control = result.editorPane.getControl();
++
++					if(isDiffEditor(control)){
++						let origEditor = control.getOriginalEditor();
++						let modEditor = control.getModifiedEditor();
++						let modelL = origEditor.getModel();
++						let modelR = modEditor.getModel();
++						if(modelL && modelR){
++							wb_monaco.loadSet.add(modelL.uri.path + wb_monaco.currentGroup + 'L');
++							wb_monaco.loadSet.add(modelR.uri.path + wb_monaco.currentGroup + 'R');
++						}
++					} else if(isCodeEditor(control) && editor.resource){
++						wb_monaco.loadSet.add(editor.resource.path + wb_monaco.currentGroup);
++					}
++													
++					if (!(this.accessor.activeGroup === this)) {
++						
++						if(isDiffEditor(control)){
++							let origEditor = control.getOriginalEditor();
++							let modEditor = control.getModifiedEditor();
++							let modelL = origEditor.getModel();
++							let modelR = modEditor.getModel();
++							if(modelL && modelR){
++								wb_monaco.connectEditorToFirepad(origEditor, modelL.uri, wb_monaco.currentGroup + 'L') || wb_monaco.connectEditorToFirepad(modEditor, modelR.uri, wb_monaco.currentGroup + 'R')
++							}
++						}else if(isCodeEditor(control)){
++							wb_monaco.connectEditorToFirepad(control, editor.resource, wb_monaco.currentGroup)
++						}
++					}
++					
+ 					// Editor change event
+ 					if (result.editorChanged) {
+ 						this._onDidGroupChange.fire({ kind: GroupChangeKind.EDITOR_ACTIVE, editor });
+diff --git a/src/vs/workbench/browser/parts/editor/editorStatus.ts b/src/vs/workbench/browser/parts/editor/editorStatus.ts
+index 4a44e0eacea713a2168878600c5acc938a3699b2..5c3a9dba75118bfe61063d1860385544d19efe01 100644
+--- a/src/vs/workbench/browser/parts/editor/editorStatus.ts
++++ b/src/vs/workbench/browser/parts/editor/editorStatus.ts
+@@ -38,7 +38,7 @@ import { ConfigurationChangedEvent, IEditorOptions, EditorOption } from 'vs/edit
+ import { ITextResourceConfigurationService } from 'vs/editor/common/services/textResourceConfigurationService';
+ import { ConfigurationTarget, IConfigurationService } from 'vs/platform/configuration/common/configuration';
+ import { deepClone } from 'vs/base/common/objects';
+-import { ICodeEditor, getCodeEditor } from 'vs/editor/browser/editorBrowser';
++import { ICodeEditor, getCodeEditor, isCodeEditor, isDiffEditor } from 'vs/editor/browser/editorBrowser';
+ import { Schemas } from 'vs/base/common/network';
+ import { IPreferencesService } from 'vs/workbench/services/preferences/common/preferences';
+ import { IQuickInputService, IQuickPickItem, QuickPickInput } from 'vs/platform/quickinput/common/quickInput';
+@@ -53,6 +53,8 @@ import { IMarker, IMarkerService, MarkerSeverity, IMarkerData } from 'vs/platfor
+ import { STATUS_BAR_PROMINENT_ITEM_BACKGROUND, STATUS_BAR_PROMINENT_ITEM_FOREGROUND } from 'vs/workbench/common/theme';
+ import { themeColorFromId } from 'vs/platform/theme/common/themeService';
+ 
++declare var wb_monaco: any;
++
+ class SideBySideEditorEncodingSupport implements IEncodingSupport {
+ 	constructor(private primary: IEncodingSupport, private secondary: IEncodingSupport) { }
+ 
+@@ -630,7 +632,24 @@ export class EditorStatus extends Disposable implements IWorkbenchContribution {
+ 
+ 		// Dispose old active editor listeners
+ 		this.activeEditorListeners.clear();
+-
++		
++		if(activeEditorPane){
++			wb_monaco.setRange(Range);
++			const control = activeEditorPane.getControl();
++
++			if(isDiffEditor(control)){
++				let origEditor = control.getOriginalEditor();
++				let modEditor = control.getModifiedEditor();
++				let modelL = origEditor.getModel();
++				let modelR = modEditor.getModel();
++				if(modelL && modelR){
++					wb_monaco.connectEditorToFirepad(origEditor, modelL.uri, activeEditorPane.group.id + 'L', {diff_original: true}) || wb_monaco.connectEditorToFirepad(modEditor, modelR.uri, activeEditorPane.group.id + 'R')
++				}
++			}else if(isCodeEditor(control) && activeInput){
++				wb_monaco.connectEditorToFirepad(control,activeInput.resource, activeEditorPane.group.id)
++			}
++		}
++		
+ 		// Attach new listeners to active editor
+ 		if (activeCodeEditor) {
+ 
+diff --git a/src/vs/workbench/browser/parts/editor/textEditor.ts b/src/vs/workbench/browser/parts/editor/textEditor.ts
+index f2a77542ef9609c4ed4f5d318a980b9dae39c35e..35e2e1801573c68fa902e8868d086cb299c12e60 100644
+--- a/src/vs/workbench/browser/parts/editor/textEditor.ts
++++ b/src/vs/workbench/browser/parts/editor/textEditor.ts
+@@ -27,6 +27,8 @@ import { IExtUri } from 'vs/base/common/resources';
+ import { MutableDisposable } from 'vs/base/common/lifecycle';
+ import { IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
+ 
++declare var wb_monaco: any;
++
+ export interface IEditorConfiguration {
+ 	editor: object;
+ 	diffEditor: object;
+@@ -68,7 +70,7 @@ export abstract class BaseTextEditor extends EditorPane implements ITextEditorPa
+ 	) {
+ 		super(id, telemetryService, themeService, storageService);
+ 		this._instantiationService = instantiationService;
+-
++        wb_monaco.editorControl = this;
+ 		this.editorMemento = this.getEditorMemento<IEditorViewState>(editorGroupService, BaseTextEditor.TEXT_EDITOR_VIEW_STATE_PREFERENCE_KEY, 100);
+ 
+ 		this._register(this.textResourceConfigurationService.onDidChangeConfiguration(() => {
 diff --git a/src/vs/workbench/browser/web.main.ts b/src/vs/workbench/browser/web.main.ts
-index 416938f141228faafc95dc765be7d5fbaf610a7e..25ff7f7c881458fbb7b5bd588704930b52f439e8 100644
+index 416938f141228faafc95dc765be7d5fbaf610a7e..49a82b3ee81e5632483a9ef7b2f5bbc4f1eb9f81 100644
 --- a/src/vs/workbench/browser/web.main.ts
 +++ b/src/vs/workbench/browser/web.main.ts
 @@ -42,6 +42,7 @@ import { FileLogService } from 'vs/platform/log/common/fileLogService';
@@ -3156,12 +3891,33 @@ index 416938f141228faafc95dc765be7d5fbaf610a7e..25ff7f7c881458fbb7b5bd588704930b
  import { coalesce } from 'vs/base/common/arrays';
  import { InMemoryFileSystemProvider } from 'vs/platform/files/common/inMemoryFilesystemProvider';
  import { WebResourceIdentityService, IResourceIdentityService } from 'vs/platform/resource/common/resourceIdentityService';
-@@ -94,6 +95,8 @@ class BrowserMain extends Disposable {
+@@ -53,6 +54,8 @@ import { IUserDataInitializationService, UserDataInitializationService } from 'v
+ import { UserDataSyncStoreManagementService } from 'vs/platform/userDataSync/common/userDataSyncStoreService';
+ import { IUserDataSyncStoreManagementService } from 'vs/platform/userDataSync/common/userDataSync';
+ 
++declare var wb_monaco: any;
++
+ class BrowserMain extends Disposable {
+ 
+ 	constructor(
+@@ -83,6 +86,8 @@ class BrowserMain extends Disposable {
+ 			services.logService
+ 		);
+ 
++		wb_monaco.serviceCollection = services.serviceCollection;
++
+ 		// Listeners
+ 		this.registerListeners(workbench, services.storageService);
+ 
+@@ -94,6 +99,11 @@ class BrowserMain extends Disposable {
  		// Startup
  		const instantiationService = workbench.startup();
  
 +		await initialize(services.serviceCollection);
-+
++		if(!wb_monaco.disabled){
++			wb_monaco.initializeCoderpair();
++			wb_monaco.coderpair.updateStatusbarEntry()
++		}
  		// Return API Facade
  		return instantiationService.invokeFunction(accessor => {
  			const commandService = accessor.get(ICommandService);
@@ -3187,6 +3943,804 @@ index 94e7e7a4bac154c45078a1b5034e50634a7a43af..8164200dcef1efbc65b50eef9c270af3
  				this._filenameKey.set(value ? basename(value) : null);
  				this._dirnameKey.set(value ? dirname(value).fsPath : null);
  				this._pathKey.set(value ? value.fsPath : null);
+diff --git a/src/vs/workbench/contrib/coderpair/browser/coderpair.contribution.ts b/src/vs/workbench/contrib/coderpair/browser/coderpair.contribution.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4541544e60512151cc2878e818c9aa4a8e5139fd
+--- /dev/null
++++ b/src/vs/workbench/contrib/coderpair/browser/coderpair.contribution.ts
+@@ -0,0 +1,227 @@
++import { URI } from 'vs/base/common/uri';
++import { CommandsRegistry } from 'vs/platform/commands/common/commands';
++import {Range} from 'vs/editor/common/core/range';
++import { ICodeEditor, isCodeEditor, isDiffEditor } from 'vs/editor/browser/editorBrowser';
++import { InstantiationService } from 'vs/platform/instantiation/common/instantiationService';
++import { IEditorService, ACTIVE_GROUP } from 'vs/workbench/services/editor/common/editorService';
++import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
++import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from 'vs/workbench/services/statusbar/common/statusbar';
++import { localize } from 'vs/nls';
++import { ScrollableElement } from 'vs/base/browser/ui/scrollbar/scrollableElement';
++import { ScrollbarVisibility } from 'vs/base/common/scrollable';
++import { Gesture } from 'vs/base/browser/touch';
++import { Disposable } from 'vs/base/common/lifecycle';
++import { addDisposableListener, EventType, hasClass } from 'vs/base/browser/dom';
++
++declare var wb_monaco: any;
++
++const TOGGLE_CODERPAIR_DIALOG = 'coderpair.toggledialog';
++const PANEL_HEIGHT = 208;
++const SCROLL_HEIGHT = 52;
++
++
++export class Coderpair extends Disposable{
++	 
++	private dialogIsVisible:boolean = false
++	private statusBarItem: IStatusbarEntryAccessor | undefined
++	private userScrollbar: ScrollableElement | undefined
++
++	constructor(
++		@IWorkbenchEnvironmentService private environmentService: IWorkbenchEnvironmentService,
++		@IEditorService private readonly editorService: IEditorService,
++		@IStatusbarService private readonly statusbarService: IStatusbarService
++	) {
++		super()
++	}
++
++	get name(): string | undefined{
++		return this.environmentService.configuration.remoteAuthority
++	}
++
++	getURI = () => {
++		let uri: URI = URI.parse("");
++		let resource: URI = uri.with({scheme:"vscode-remote", authority:'localhost:8080', path:"/Users/robertbeach/projects/code-server/cpr/theme.js", query:"", fragment:""}) 
++		return resource;
++	}
++
++	public async openURI(path:string, cursor:any):Promise<void> {
++		let uri: URI = URI.parse("");
++		let resource: URI = uri.with({scheme:"vscode-remote", authority:this.environmentService.configuration.remoteAuthority, path:path, query:"", fragment:""}) 
++		let editorPane = await this.editorService.openEditor({ resource: resource, options: { preserveFocus: false, pinned: false } }, ACTIVE_GROUP);
++		if(editorPane){
++			let control = editorPane.getControl();
++			let editor: ICodeEditor | undefined;
++			if (isCodeEditor(control)) {
++				editor = control as ICodeEditor;
++			} else if (isDiffEditor(control)) {
++				editor = control.getModifiedEditor();
++			}
++			if(editor){
++				if(!cursor){
++					cursor = {l:1,c:1}
++				}
++				const range:Range = new Range(cursor.l,cursor.c,cursor.l,cursor.c)
++				editor.revealRangeInCenter(range)
++				wb_monaco.goToRange = {
++					editor:editor,
++					range:range
++				}
++			}
++		}
++	}
++
++    public showDialog():void{
++		this.dialogIsVisible=true
++		let elem = document.getElementById('firepad-userlist');
++		if(elem){
++			elem.style.visibility='visible';
++		}
++		this.updateStatusbarEntry()
++	}
++
++	public hideDialog():void{
++		this.dialogIsVisible=false
++		let elem = document.getElementById('firepad-userlist');
++		if(elem){
++			elem.style.visibility='hidden';
++		}
++		this.updateStatusbarEntry()
++	}
++
++    public updateStatusbarEntry():void{
++		// Toggle Notifications Center
++		CommandsRegistry.registerCommand(TOGGLE_CODERPAIR_DIALOG, accessor => {
++			if (this.dialogIsVisible) {
++				this.hideDialog();
++			} else {
++				this.hideDialog();
++				this.showDialog();
++			}
++		});
++		// Show the bell with a dot if there are unread or in-progress notifications
++		const statusProperties: IStatusbarEntry = {
++			text: '$(organization)',
++			ariaLabel: localize('status.notifications', "Live"),
++			command: TOGGLE_CODERPAIR_DIALOG,
++			tooltip: 'Live',
++			showBeak: this.dialogIsVisible
++		};
++
++		if (!this.statusBarItem) {
++			this.statusBarItem = this.statusbarService.addEntry(
++				statusProperties,
++				'status.collab',
++				localize('status.collab', "Live"),
++				StatusbarAlignment.RIGHT,
++				-Number.MAX_VALUE /* towards the far end of the right hand side */
++			);
++		} else {
++			this.statusBarItem.update(statusProperties);
++		}
++	}	
++
++	public makeUserScrollbar(parent:HTMLDivElement,container:HTMLDivElement):ScrollableElement{
++		// Container
++		const outer = document.createElement('div');
++		outer.setAttribute('role', 'tablist');
++		this._register(Gesture.addTarget(outer));
++
++		// Scrollbar
++		const scrollbar = this._register(this.createUserScrollbar(outer));
++		parent.appendChild(scrollbar.getDomNode());
++		outer.appendChild(container);
++		
++		// Container listeners
++		this.registerContainerListeners2(outer, scrollbar);
++		scrollbar.setScrollDimensions({height: PANEL_HEIGHT,scrollHeight:SCROLL_HEIGHT});
++		this.userScrollbar = scrollbar;
++		return scrollbar;
++	}
++
++	public setUserScrollbarDimensions(n:number):void{
++		if(this.userScrollbar)
++		this.userScrollbar.setScrollDimensions({height: PANEL_HEIGHT,scrollHeight:SCROLL_HEIGHT*n});
++	}
++
++	private createUserScrollbar(scrollable: HTMLElement): ScrollableElement {
++		const scrollbar = new ScrollableElement(scrollable, {
++			alwaysConsumeMouseWheel: true,
++			horizontal: ScrollbarVisibility.Hidden,
++			vertical: ScrollbarVisibility.Visible,
++			verticalScrollbarSize: 7,
++			handleMouseWheel: true,
++			useShadows: false
++		});
++
++		scrollbar.onScroll(e => {
++			scrollable.scrollTop = e.scrollTop;
++		});
++
++		return scrollbar;
++	}
++
++	private registerContainerListeners2(container: HTMLElement, scrollbar: ScrollableElement): void {
++
++		// Forward scrolling inside the container to our custom scrollbar
++		this._register(addDisposableListener(container, EventType.SCROLL, () => {
++			if (hasClass(container, 'scroll')) {
++				scrollbar.setScrollPosition({
++					scrollTop: container.scrollTop // during DND the container gets scrolled so we need to update the custom scrollbar
++				});
++			}
++		}));
++	}
++
++	public makePathScrollbar(parent:HTMLDivElement,container:HTMLDivElement): ScrollableElement{
++		// Container
++		const outer = document.createElement('div');
++		outer.setAttribute('role', 'tablist');
++		this._register(Gesture.addTarget(outer));
++
++		// Scrollbar
++		const scrollbar = this._register(this.createPathScrollbar(outer));
++		parent.appendChild(scrollbar.getDomNode());
++		outer.appendChild(container);
++		
++		// Container listeners
++		this.registerContainerListeners(outer, scrollbar);
++		return scrollbar;
++	}
++
++	private createPathScrollbar(scrollable: HTMLElement): ScrollableElement {
++		const scrollbar = new ScrollableElement(scrollable, {
++			horizontal: ScrollbarVisibility.Auto,
++			horizontalScrollbarSize: 3,
++			vertical: ScrollbarVisibility.Hidden,
++			scrollYToX: false,
++			allowPropagation:true,
++			useShadows: false
++		});
++
++		scrollbar.onScroll(e => {
++			scrollable.scrollLeft = e.scrollLeft;
++		});
++
++		return scrollbar;
++	}
++
++	private registerContainerListeners(container: HTMLElement, scrollbar: ScrollableElement): void {
++
++		// Forward scrolling inside the container to our custom scrollbar
++		this._register(addDisposableListener(container, EventType.SCROLL, () => {
++			if (hasClass(container, 'scroll')) {
++				scrollbar.setScrollPosition({
++					scrollLeft: container.scrollLeft // during DND the container gets scrolled so we need to update the custom scrollbar
++				});
++			}
++		}));
++	}
++}
++
++wb_monaco.initializeCoderpair = function(){
++	const instantiationService = new InstantiationService(wb_monaco.serviceCollection, true);
++	wb_monaco.coderpair = instantiationService.createInstance(Coderpair);
++	wb_monaco.userList.makeUserList()
++}
++
++
+diff --git a/src/vs/workbench/contrib/files/browser/fileActions.contribution.ts b/src/vs/workbench/contrib/files/browser/fileActions.contribution.ts
+index 086fa8c123a0487eb71c085de89983393579a8b1..e4252efbce8c37afc19b30a1b7209d5bfe90f026 100644
+--- a/src/vs/workbench/contrib/files/browser/fileActions.contribution.ts
++++ b/src/vs/workbench/contrib/files/browser/fileActions.contribution.ts
+@@ -30,6 +30,8 @@ import { ActiveEditorContext } from 'vs/workbench/common/editor';
+ import { SidebarFocusContext } from 'vs/workbench/common/viewlet';
+ import { ThemeIcon } from 'vs/platform/theme/common/themeService';
+ 
++declare var wb_monaco: any;
++
+ // Contribute Global Actions
+ const category = { value: nls.localize('filesCategory', "File"), original: 'File' };
+ 
+@@ -647,15 +649,17 @@ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+ 	order: 3
+ });
+ 
+-MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+-	group: '5_autosave',
+-	command: {
+-		id: ToggleAutoSaveAction.ID,
+-		title: nls.localize({ key: 'miAutoSave', comment: ['&& denotes a mnemonic'] }, "A&&uto Save"),
+-		toggled: ContextKeyExpr.notEquals('config.files.autoSave', 'off')
+-	},
+-	order: 1
+-});
++if(wb_monaco.disabled){
++	MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
++		group: '5_autosave',
++		command: {
++			id: ToggleAutoSaveAction.ID,
++			title: nls.localize({ key: 'miAutoSave', comment: ['&& denotes a mnemonic'] }, "A&&uto Save"),
++			toggled: ContextKeyExpr.notEquals('config.files.autoSave', 'off')
++		},
++		order: 1
++	});
++}
+ 
+ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+ 	group: '6_close',
+diff --git a/src/vs/workbench/contrib/files/browser/files.contribution.ts b/src/vs/workbench/contrib/files/browser/files.contribution.ts
+index d2e8299e07acc9d1843d664bed23137705756b8d..bd33b9f9fb67ca4db03ef7973742c65f5ed2a9ae 100644
+--- a/src/vs/workbench/contrib/files/browser/files.contribution.ts
++++ b/src/vs/workbench/contrib/files/browser/files.contribution.ts
+@@ -41,6 +41,8 @@ import { editorConfigurationBaseNode } from 'vs/editor/common/config/commonEdito
+ import { DirtyFilesIndicator } from 'vs/workbench/contrib/files/common/dirtyFilesIndicator';
+ import { isEqual } from 'vs/base/common/resources';
+ 
++declare var wb_monaco: any;
++
+ // Viewlet Action
+ export class OpenExplorerViewletAction extends ShowViewletAction {
+ 	static readonly ID = VIEWLET_ID;
+@@ -204,157 +206,294 @@ const hotExitConfiguration: IConfigurationPropertySchema = platform.isNative ?
+ 		'description': nls.localize('hotExit', "Controls whether unsaved files are remembered between sessions, allowing the save prompt when exiting the editor to be skipped.", HotExitConfiguration.ON_EXIT, HotExitConfiguration.ON_EXIT_AND_WINDOW_CLOSE)
+ 	};
+ 
+-configurationRegistry.registerConfiguration({
+-	'id': 'files',
+-	'order': 9,
+-	'title': nls.localize('filesConfigurationTitle', "Files"),
+-	'type': 'object',
+-	'properties': {
+-		[FILES_EXCLUDE_CONFIG]: {
+-			'type': 'object',
+-			'markdownDescription': nls.localize('exclude', "Configure glob patterns for excluding files and folders. For example, the file Explorer decides which files and folders to show or hide based on this setting. Refer to the `#search.exclude#` setting to define search specific excludes. Read more about glob patterns [here](https://code.visualstudio.com/docs/editor/codebasics#_advanced-search-options)."),
+-			'default': { '**/.git': true, '**/.svn': true, '**/.hg': true, '**/CVS': true, '**/.DS_Store': true },
+-			'scope': ConfigurationScope.RESOURCE,
+-			'additionalProperties': {
+-				'anyOf': [
+-					{
+-						'type': 'boolean',
+-						'description': nls.localize('files.exclude.boolean', "The glob pattern to match file paths against. Set to true or false to enable or disable the pattern."),
+-					},
+-					{
+-						'type': 'object',
+-						'properties': {
+-							'when': {
+-								'type': 'string', // expression ({ "**/*.js": { "when": "$(basename).js" } })
+-								'pattern': '\\w*\\$\\(basename\\)\\w*',
+-								'default': '$(basename).ext',
+-								'description': nls.localize('files.exclude.when', "Additional check on the siblings of a matching file. Use $(basename) as variable for the matching file name.")
++if(!wb_monaco.disabled){
++	configurationRegistry.registerConfiguration({
++		'id': 'files',
++		'order': 9,
++		'title': nls.localize('filesConfigurationTitle', "Files"),
++		'type': 'object',
++		'properties': {
++			[FILES_EXCLUDE_CONFIG]: {
++				'type': 'object',
++				'markdownDescription': nls.localize('exclude', "Configure glob patterns for excluding files and folders. For example, the file Explorer decides which files and folders to show or hide based on this setting. Refer to the `#search.exclude#` setting to define search specific excludes. Read more about glob patterns [here](https://code.visualstudio.com/docs/editor/codebasics#_advanced-search-options)."),
++				'default': { '**/.git': true, '**/.svn': true, '**/.hg': true, '**/CVS': true, '**/.DS_Store': true },
++				'scope': ConfigurationScope.RESOURCE,
++				'additionalProperties': {
++					'anyOf': [
++						{
++							'type': 'boolean',
++							'description': nls.localize('files.exclude.boolean', "The glob pattern to match file paths against. Set to true or false to enable or disable the pattern."),
++						},
++						{
++							'type': 'object',
++							'properties': {
++								'when': {
++									'type': 'string', // expression ({ "**/*.js": { "when": "$(basename).js" } })
++									'pattern': '\\w*\\$\\(basename\\)\\w*',
++									'default': '$(basename).ext',
++									'description': nls.localize('files.exclude.when', "Additional check on the siblings of a matching file. Use $(basename) as variable for the matching file name.")
++								}
+ 							}
+ 						}
+-					}
+-				]
++					]
++				}
++			},
++			[FILES_ASSOCIATIONS_CONFIG]: {
++				'type': 'object',
++				'markdownDescription': nls.localize('associations', "Configure file associations to languages (e.g. `\"*.extension\": \"html\"`). These have precedence over the default associations of the languages installed."),
++				'additionalProperties': {
++					'type': 'string'
++				}
++			},
++			'files.encoding': {
++				'type': 'string',
++				'enum': Object.keys(SUPPORTED_ENCODINGS),
++				'default': 'utf8',
++				'description': nls.localize('encoding', "The default character set encoding to use when reading and writing files. This setting can also be configured per language."),
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE,
++				'enumDescriptions': Object.keys(SUPPORTED_ENCODINGS).map(key => SUPPORTED_ENCODINGS[key].labelLong)
++			},
++			'files.autoGuessEncoding': {
++				'type': 'boolean',
++				'default': false,
++				'description': nls.localize('autoGuessEncoding', "When enabled, the editor will attempt to guess the character set encoding when opening files. This setting can also be configured per language."),
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
++			},
++			'files.eol': {
++				'type': 'string',
++				'enum': [
++					'\n',
++					'\r\n',
++					'auto'
++				],
++				'enumDescriptions': [
++					nls.localize('eol.LF', "LF"),
++					nls.localize('eol.CRLF', "CRLF"),
++					nls.localize('eol.auto', "Uses operating system specific end of line character.")
++				],
++				'default': 'auto',
++				'description': nls.localize('eol', "The default end of line character."),
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
++			},
++			'files.enableTrash': {
++				'type': 'boolean',
++				'default': true,
++				'description': nls.localize('useTrash', "Moves files/folders to the OS trash (recycle bin on Windows) when deleting. Disabling this will delete files/folders permanently.")
++			},
++			'files.trimTrailingWhitespace': {
++				'type': 'boolean',
++				'default': false,
++				'description': nls.localize('trimTrailingWhitespace', "When enabled, will trim trailing whitespace when saving a file."),
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
++			},
++			'files.insertFinalNewline': {
++				'type': 'boolean',
++				'default': false,
++				'description': nls.localize('insertFinalNewline', "When enabled, insert a final new line at the end of the file when saving it."),
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
++			},
++			'files.trimFinalNewlines': {
++				'type': 'boolean',
++				'default': false,
++				'description': nls.localize('trimFinalNewlines', "When enabled, will trim all new lines after the final new line at the end of the file when saving it."),
++				scope: ConfigurationScope.LANGUAGE_OVERRIDABLE,
++			},
++			'files.watcherExclude': {
++				'type': 'object',
++				'default': platform.isWindows /* https://github.com/microsoft/vscode/issues/23954 */ ? { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/*/**': true, '**/.hg/store/**': true } : { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/**': true, '**/.hg/store/**': true },
++				'description': nls.localize('watcherExclude', "Configure glob patterns of file paths to exclude from file watching. Patterns must match on absolute paths (i.e. prefix with ** or the full path to match properly). Changing this setting requires a restart. When you experience Code consuming lots of CPU time on startup, you can exclude large folders to reduce the initial load."),
++				'scope': ConfigurationScope.RESOURCE
++			},
++			'files.hotExit': hotExitConfiguration,
++			'files.defaultLanguage': {
++				'type': 'string',
++				'markdownDescription': nls.localize('defaultLanguage', "The default language mode that is assigned to new files. If configured to `${activeEditorLanguage}`, will use the language mode of the currently active text editor if any.")
++			},
++			'files.maxMemoryForLargeFilesMB': {
++				'type': 'number',
++				'default': 4096,
++				'markdownDescription': nls.localize('maxMemoryForLargeFilesMB', "Controls the memory available to VS Code after restart when trying to open large files. Same effect as specifying `--max-memory=NEWSIZE` on the command line."),
++				included: platform.isNative
++			},
++			'files.restoreUndoStack': {
++				'type': 'boolean',
++				'description': nls.localize('files.restoreUndoStack', "Restore the undo stack when a file is reopened."),
++				'default': true
++			},
++			'files.saveConflictResolution': {
++				'type': 'string',
++				'enum': [
++					'askUser',
++					'overwriteFileOnDisk'
++				],
++				'enumDescriptions': [
++					nls.localize('askUser', "Will refuse to save and ask for resolving the save conflict manually."),
++					nls.localize('overwriteFileOnDisk', "Will resolve the save conflict by overwriting the file on disk with the changes in the editor.")
++				],
++				'description': nls.localize('files.saveConflictResolution', "A save conflict can occur when a file is saved to disk that was changed by another program in the meantime. To prevent data loss, the user is asked to compare the changes in the editor with the version on disk. This setting should only be changed if you frequently encounter save conflict errors and may result in data loss if used without caution."),
++				'default': 'askUser',
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
++			},
++			'files.simpleDialog.enable': {
++				'type': 'boolean',
++				'description': nls.localize('files.simpleDialog.enable', "Enables the simple file dialog. The simple file dialog replaces the system file dialog when enabled."),
++				'default': false
+ 			}
+-		},
+-		[FILES_ASSOCIATIONS_CONFIG]: {
+-			'type': 'object',
+-			'markdownDescription': nls.localize('associations', "Configure file associations to languages (e.g. `\"*.extension\": \"html\"`). These have precedence over the default associations of the languages installed."),
+-			'additionalProperties': {
+-				'type': 'string'
++		}
++	})
++}else{
++	configurationRegistry.registerConfiguration({
++		'id': 'files',
++		'order': 9,
++		'title': nls.localize('filesConfigurationTitle', "Files"),
++		'type': 'object',
++		'properties': {
++			[FILES_EXCLUDE_CONFIG]: {
++				'type': 'object',
++				'markdownDescription': nls.localize('exclude', "Configure glob patterns for excluding files and folders. For example, the file Explorer decides which files and folders to show or hide based on this setting. Refer to the `#search.exclude#` setting to define search specific excludes. Read more about glob patterns [here](https://code.visualstudio.com/docs/editor/codebasics#_advanced-search-options)."),
++				'default': { '**/.git': true, '**/.svn': true, '**/.hg': true, '**/CVS': true, '**/.DS_Store': true },
++				'scope': ConfigurationScope.RESOURCE,
++				'additionalProperties': {
++					'anyOf': [
++						{
++							'type': 'boolean',
++							'description': nls.localize('files.exclude.boolean', "The glob pattern to match file paths against. Set to true or false to enable or disable the pattern."),
++						},
++						{
++							'type': 'object',
++							'properties': {
++								'when': {
++									'type': 'string', // expression ({ "**/*.js": { "when": "$(basename).js" } })
++									'pattern': '\\w*\\$\\(basename\\)\\w*',
++									'default': '$(basename).ext',
++									'description': nls.localize('files.exclude.when', "Additional check on the siblings of a matching file. Use $(basename) as variable for the matching file name.")
++								}
++							}
++						}
++					]
++				}
++			},
++			[FILES_ASSOCIATIONS_CONFIG]: {
++				'type': 'object',
++				'markdownDescription': nls.localize('associations', "Configure file associations to languages (e.g. `\"*.extension\": \"html\"`). These have precedence over the default associations of the languages installed."),
++				'additionalProperties': {
++					'type': 'string'
++				}
++			},
++			'files.encoding': {
++				'type': 'string',
++				'enum': Object.keys(SUPPORTED_ENCODINGS),
++				'default': 'utf8',
++				'description': nls.localize('encoding', "The default character set encoding to use when reading and writing files. This setting can also be configured per language."),
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE,
++				'enumDescriptions': Object.keys(SUPPORTED_ENCODINGS).map(key => SUPPORTED_ENCODINGS[key].labelLong)
++			},
++			'files.autoGuessEncoding': {
++				'type': 'boolean',
++				'default': false,
++				'description': nls.localize('autoGuessEncoding', "When enabled, the editor will attempt to guess the character set encoding when opening files. This setting can also be configured per language."),
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
++			},
++			'files.eol': {
++				'type': 'string',
++				'enum': [
++					'\n',
++					'\r\n',
++					'auto'
++				],
++				'enumDescriptions': [
++					nls.localize('eol.LF', "LF"),
++					nls.localize('eol.CRLF', "CRLF"),
++					nls.localize('eol.auto', "Uses operating system specific end of line character.")
++				],
++				'default': 'auto',
++				'description': nls.localize('eol', "The default end of line character."),
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
++			},
++			'files.enableTrash': {
++				'type': 'boolean',
++				'default': true,
++				'description': nls.localize('useTrash', "Moves files/folders to the OS trash (recycle bin on Windows) when deleting. Disabling this will delete files/folders permanently.")
++			},
++			'files.trimTrailingWhitespace': {
++				'type': 'boolean',
++				'default': false,
++				'description': nls.localize('trimTrailingWhitespace', "When enabled, will trim trailing whitespace when saving a file."),
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
++			},
++			'files.insertFinalNewline': {
++				'type': 'boolean',
++				'default': false,
++				'description': nls.localize('insertFinalNewline', "When enabled, insert a final new line at the end of the file when saving it."),
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
++			},
++			'files.trimFinalNewlines': {
++				'type': 'boolean',
++				'default': false,
++				'description': nls.localize('trimFinalNewlines', "When enabled, will trim all new lines after the final new line at the end of the file when saving it."),
++				scope: ConfigurationScope.LANGUAGE_OVERRIDABLE,
++			},
++			'files.autoSave': {
++				'type': 'string',
++				'enum': [AutoSaveConfiguration.OFF, AutoSaveConfiguration.AFTER_DELAY, AutoSaveConfiguration.ON_FOCUS_CHANGE, AutoSaveConfiguration.ON_WINDOW_CHANGE],
++				'markdownEnumDescriptions': [
++					nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.off' }, "A dirty editor is never automatically saved."),
++					nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.afterDelay' }, "A dirty editor is automatically saved after the configured `#files.autoSaveDelay#`."),
++					nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.onFocusChange' }, "A dirty editor is automatically saved when the editor loses focus."),
++					nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.onWindowChange' }, "A dirty editor is automatically saved when the window loses focus.")
++				],
++				'default': platform.isWeb ? AutoSaveConfiguration.AFTER_DELAY : AutoSaveConfiguration.OFF,
++				'markdownDescription': nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'autoSave' }, "Controls auto save of dirty editors. Read more about autosave [here](https://code.visualstudio.com/docs/editor/codebasics#_save-auto-save).", AutoSaveConfiguration.OFF, AutoSaveConfiguration.AFTER_DELAY, AutoSaveConfiguration.ON_FOCUS_CHANGE, AutoSaveConfiguration.ON_WINDOW_CHANGE, AutoSaveConfiguration.AFTER_DELAY)
++			},
++			'files.autoSaveDelay': {
++				'type': 'number',
++				'default': 1000,
++				'markdownDescription': nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'autoSaveDelay' }, "Controls the delay in ms after which a dirty editor is saved automatically. Only applies when `#files.autoSave#` is set to `{0}`.", AutoSaveConfiguration.AFTER_DELAY)
++			},
++			'files.watcherExclude': {
++				'type': 'object',
++				'default': platform.isWindows /* https://github.com/microsoft/vscode/issues/23954 */ ? { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/*/**': true, '**/.hg/store/**': true } : { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/**': true, '**/.hg/store/**': true },
++				'description': nls.localize('watcherExclude', "Configure glob patterns of file paths to exclude from file watching. Patterns must match on absolute paths (i.e. prefix with ** or the full path to match properly). Changing this setting requires a restart. When you experience Code consuming lots of CPU time on startup, you can exclude large folders to reduce the initial load."),
++				'scope': ConfigurationScope.RESOURCE
++			},
++			'files.hotExit': hotExitConfiguration,
++			'files.defaultLanguage': {
++				'type': 'string',
++				'markdownDescription': nls.localize('defaultLanguage', "The default language mode that is assigned to new files. If configured to `${activeEditorLanguage}`, will use the language mode of the currently active text editor if any.")
++			},
++			'files.maxMemoryForLargeFilesMB': {
++				'type': 'number',
++				'default': 4096,
++				'markdownDescription': nls.localize('maxMemoryForLargeFilesMB', "Controls the memory available to VS Code after restart when trying to open large files. Same effect as specifying `--max-memory=NEWSIZE` on the command line."),
++				included: platform.isNative
++			},
++			'files.restoreUndoStack': {
++				'type': 'boolean',
++				'description': nls.localize('files.restoreUndoStack', "Restore the undo stack when a file is reopened."),
++				'default': true
++			},
++			'files.saveConflictResolution': {
++				'type': 'string',
++				'enum': [
++					'askUser',
++					'overwriteFileOnDisk'
++				],
++				'enumDescriptions': [
++					nls.localize('askUser', "Will refuse to save and ask for resolving the save conflict manually."),
++					nls.localize('overwriteFileOnDisk', "Will resolve the save conflict by overwriting the file on disk with the changes in the editor.")
++				],
++				'description': nls.localize('files.saveConflictResolution', "A save conflict can occur when a file is saved to disk that was changed by another program in the meantime. To prevent data loss, the user is asked to compare the changes in the editor with the version on disk. This setting should only be changed if you frequently encounter save conflict errors and may result in data loss if used without caution."),
++				'default': 'askUser',
++				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
++			},
++			'files.simpleDialog.enable': {
++				'type': 'boolean',
++				'description': nls.localize('files.simpleDialog.enable', "Enables the simple file dialog. The simple file dialog replaces the system file dialog when enabled."),
++				'default': false
+ 			}
+-		},
+-		'files.encoding': {
+-			'type': 'string',
+-			'enum': Object.keys(SUPPORTED_ENCODINGS),
+-			'default': 'utf8',
+-			'description': nls.localize('encoding', "The default character set encoding to use when reading and writing files. This setting can also be configured per language."),
+-			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE,
+-			'enumDescriptions': Object.keys(SUPPORTED_ENCODINGS).map(key => SUPPORTED_ENCODINGS[key].labelLong)
+-		},
+-		'files.autoGuessEncoding': {
+-			'type': 'boolean',
+-			'default': false,
+-			'description': nls.localize('autoGuessEncoding', "When enabled, the editor will attempt to guess the character set encoding when opening files. This setting can also be configured per language."),
+-			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
+-		},
+-		'files.eol': {
+-			'type': 'string',
+-			'enum': [
+-				'\n',
+-				'\r\n',
+-				'auto'
+-			],
+-			'enumDescriptions': [
+-				nls.localize('eol.LF', "LF"),
+-				nls.localize('eol.CRLF', "CRLF"),
+-				nls.localize('eol.auto', "Uses operating system specific end of line character.")
+-			],
+-			'default': 'auto',
+-			'description': nls.localize('eol', "The default end of line character."),
+-			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
+-		},
+-		'files.enableTrash': {
+-			'type': 'boolean',
+-			'default': true,
+-			'description': nls.localize('useTrash', "Moves files/folders to the OS trash (recycle bin on Windows) when deleting. Disabling this will delete files/folders permanently.")
+-		},
+-		'files.trimTrailingWhitespace': {
+-			'type': 'boolean',
+-			'default': false,
+-			'description': nls.localize('trimTrailingWhitespace', "When enabled, will trim trailing whitespace when saving a file."),
+-			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
+-		},
+-		'files.insertFinalNewline': {
+-			'type': 'boolean',
+-			'default': false,
+-			'description': nls.localize('insertFinalNewline', "When enabled, insert a final new line at the end of the file when saving it."),
+-			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
+-		},
+-		'files.trimFinalNewlines': {
+-			'type': 'boolean',
+-			'default': false,
+-			'description': nls.localize('trimFinalNewlines', "When enabled, will trim all new lines after the final new line at the end of the file when saving it."),
+-			scope: ConfigurationScope.LANGUAGE_OVERRIDABLE,
+-		},
+-		'files.autoSave': {
+-			'type': 'string',
+-			'enum': [AutoSaveConfiguration.OFF, AutoSaveConfiguration.AFTER_DELAY, AutoSaveConfiguration.ON_FOCUS_CHANGE, AutoSaveConfiguration.ON_WINDOW_CHANGE],
+-			'markdownEnumDescriptions': [
+-				nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.off' }, "A dirty editor is never automatically saved."),
+-				nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.afterDelay' }, "A dirty editor is automatically saved after the configured `#files.autoSaveDelay#`."),
+-				nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.onFocusChange' }, "A dirty editor is automatically saved when the editor loses focus."),
+-				nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.onWindowChange' }, "A dirty editor is automatically saved when the window loses focus.")
+-			],
+-			'default': platform.isWeb ? AutoSaveConfiguration.AFTER_DELAY : AutoSaveConfiguration.OFF,
+-			'markdownDescription': nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'autoSave' }, "Controls auto save of dirty editors. Read more about autosave [here](https://code.visualstudio.com/docs/editor/codebasics#_save-auto-save).", AutoSaveConfiguration.OFF, AutoSaveConfiguration.AFTER_DELAY, AutoSaveConfiguration.ON_FOCUS_CHANGE, AutoSaveConfiguration.ON_WINDOW_CHANGE, AutoSaveConfiguration.AFTER_DELAY)
+-		},
+-		'files.autoSaveDelay': {
+-			'type': 'number',
+-			'default': 1000,
+-			'markdownDescription': nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'autoSaveDelay' }, "Controls the delay in ms after which a dirty editor is saved automatically. Only applies when `#files.autoSave#` is set to `{0}`.", AutoSaveConfiguration.AFTER_DELAY)
+-		},
+-		'files.watcherExclude': {
+-			'type': 'object',
+-			'default': platform.isWindows /* https://github.com/microsoft/vscode/issues/23954 */ ? { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/*/**': true, '**/.hg/store/**': true } : { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/**': true, '**/.hg/store/**': true },
+-			'description': nls.localize('watcherExclude', "Configure glob patterns of file paths to exclude from file watching. Patterns must match on absolute paths (i.e. prefix with ** or the full path to match properly). Changing this setting requires a restart. When you experience Code consuming lots of CPU time on startup, you can exclude large folders to reduce the initial load."),
+-			'scope': ConfigurationScope.RESOURCE
+-		},
+-		'files.hotExit': hotExitConfiguration,
+-		'files.defaultLanguage': {
+-			'type': 'string',
+-			'markdownDescription': nls.localize('defaultLanguage', "The default language mode that is assigned to new files. If configured to `${activeEditorLanguage}`, will use the language mode of the currently active text editor if any.")
+-		},
+-		'files.maxMemoryForLargeFilesMB': {
+-			'type': 'number',
+-			'default': 4096,
+-			'markdownDescription': nls.localize('maxMemoryForLargeFilesMB', "Controls the memory available to VS Code after restart when trying to open large files. Same effect as specifying `--max-memory=NEWSIZE` on the command line."),
+-			included: platform.isNative
+-		},
+-		'files.restoreUndoStack': {
+-			'type': 'boolean',
+-			'description': nls.localize('files.restoreUndoStack', "Restore the undo stack when a file is reopened."),
+-			'default': true
+-		},
+-		'files.saveConflictResolution': {
+-			'type': 'string',
+-			'enum': [
+-				'askUser',
+-				'overwriteFileOnDisk'
+-			],
+-			'enumDescriptions': [
+-				nls.localize('askUser', "Will refuse to save and ask for resolving the save conflict manually."),
+-				nls.localize('overwriteFileOnDisk', "Will resolve the save conflict by overwriting the file on disk with the changes in the editor.")
+-			],
+-			'description': nls.localize('files.saveConflictResolution', "A save conflict can occur when a file is saved to disk that was changed by another program in the meantime. To prevent data loss, the user is asked to compare the changes in the editor with the version on disk. This setting should only be changed if you frequently encounter save conflict errors and may result in data loss if used without caution."),
+-			'default': 'askUser',
+-			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
+-		},
+-		'files.simpleDialog.enable': {
+-			'type': 'boolean',
+-			'description': nls.localize('files.simpleDialog.enable', "Enables the simple file dialog. The simple file dialog replaces the system file dialog when enabled."),
+-			'default': false
+ 		}
+-	}
+-});
++	});
++}
+ 
+ configurationRegistry.registerConfiguration({
+ 	...editorConfigurationBaseNode,
+diff --git a/src/vs/workbench/contrib/files/common/editors/fileEditorInput.ts b/src/vs/workbench/contrib/files/common/editors/fileEditorInput.ts
+index 766b74cad5070ecf469c558ddce8170cd8375ad9..1d5de16f15105daac42eda3ad5dcb589e9635657 100644
+--- a/src/vs/workbench/contrib/files/common/editors/fileEditorInput.ts
++++ b/src/vs/workbench/contrib/files/common/editors/fileEditorInput.ts
+@@ -22,6 +22,8 @@ import { isEqual } from 'vs/base/common/resources';
+ import { Event } from 'vs/base/common/event';
+ import { IEditorViewState } from 'vs/editor/common/editorCommon';
+ 
++declare var wb_monaco: any;
++
+ const enum ForceOpenAs {
+ 	None,
+ 	Text,
+@@ -238,12 +240,13 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements
+ 	private async doResolveAsText(): Promise<ITextFileEditorModel | BinaryEditorModel> {
+ 		try {
+ 
++			const isInvalid = await wb_monaco.isInvalid(this.resource.path);
+ 			// Resolve resource via text file service and only allow
+ 			// to open binary files if we are instructed so
+ 			await this.textFileService.files.resolve(this.resource, {
+ 				mode: this.preferredMode,
+ 				encoding: this.preferredEncoding,
+-				reload: { async: true }, // trigger a reload of the model if it exists already but do not wait to show the model
++				reload: { async: (isInvalid ? false : true) }, // trigger a reload of the model if it exists already but do not wait to show the model
+ 				allowBinary: this.forceOpenAs === ForceOpenAs.Text,
+ 				reason: TextFileLoadReason.EDITOR
+ 			});
+diff --git a/src/vs/workbench/contrib/preferences/browser/preferences.contribution.ts b/src/vs/workbench/contrib/preferences/browser/preferences.contribution.ts
+index 6c013fb1efc221f61e3a438a16ae0b9b79803f87..325476505b3418cdb31b4b393f5c8f06c98877a4 100644
+--- a/src/vs/workbench/contrib/preferences/browser/preferences.contribution.ts
++++ b/src/vs/workbench/contrib/preferences/browser/preferences.contribution.ts
+@@ -41,6 +41,8 @@ import { IExtensionService } from 'vs/workbench/services/extensions/common/exten
+ import { IPreferencesService } from 'vs/workbench/services/preferences/common/preferences';
+ import { DefaultPreferencesEditorInput, KeybindingsEditorInput, PreferencesEditorInput, SettingsEditor2Input } from 'vs/workbench/services/preferences/common/preferencesEditorInput';
+ 
++declare var wb_monaco: any;
++
+ const SETTINGS_EDITOR_COMMAND_SEARCH = 'settings.action.search';
+ 
+ const SETTINGS_EDITOR_COMMAND_FOCUS_NEXT_SETTING = 'settings.action.focusNextSetting';
+@@ -1155,6 +1157,6 @@ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+ 	title: nls.localize({ key: 'miPreferences', comment: ['&& denotes a mnemonic'] }, "&&Preferences"),
+ 	submenu: MenuId.MenubarPreferencesMenu,
+ 	group: '5_autosave',
+-	order: 2,
++	order: (wb_monaco.disabled?2:1),
+ 	when: IsMacNativeContext.toNegated() // on macOS native the preferences menu is separate under the application menu
+ });
+diff --git a/src/vs/workbench/contrib/scm/browser/dirtydiffDecorator.ts b/src/vs/workbench/contrib/scm/browser/dirtydiffDecorator.ts
+index b826a548cb40e1f3a1df3a07465c96f9d2e40f42..3a5ca20aa2394072bde188e283109082704b53ab 100644
+--- a/src/vs/workbench/contrib/scm/browser/dirtydiffDecorator.ts
++++ b/src/vs/workbench/contrib/scm/browser/dirtydiffDecorator.ts
+@@ -49,6 +49,8 @@ import { createStyleSheet } from 'vs/base/browser/dom';
+ import { ITextFileEditorModel, IResolvedTextFileEditorModel, ITextFileService, isTextFileEditorModel } from 'vs/workbench/services/textfile/common/textfiles';
+ import { EncodingMode } from 'vs/workbench/common/editor';
+ 
++declare var wb_monaco: any;
++
+ class DiffActionRunner extends ActionRunner {
+ 
+ 	runAction(action: IAction, context: any): Promise<any> {
+@@ -1076,7 +1078,7 @@ export class DirtyDiffModel extends Disposable {
+ 	}
+ 
+ 	private triggerDiff(): Promise<any> {
+-		if (!this.diffDelayer) {
++        if (!this.diffDelayer || wb_monaco.suppressTriggerDiff) {
+ 			return Promise.resolve(null);
+ 		}
+ 
 diff --git a/src/vs/workbench/contrib/scm/browser/media/scm.css b/src/vs/workbench/contrib/scm/browser/media/scm.css
 index ac44ad3bae428def66e22fe9cc1c54648d429f6b..faa63023c4c586b51fa3c2a48ff3641b9cb0e145 100644
 --- a/src/vs/workbench/contrib/scm/browser/media/scm.css
@@ -3206,6 +4760,90 @@ index ac44ad3bae428def66e22fe9cc1c54648d429f6b..faa63023c4c586b51fa3c2a48ff3641b
  
  .scm-view .monaco-list .monaco-list-row .resource-group > .actions,
  .scm-view .monaco-list .monaco-list-row .resource > .name > .monaco-icon-label > .actions {
+diff --git a/src/vs/workbench/contrib/search/browser/replaceService.ts b/src/vs/workbench/contrib/search/browser/replaceService.ts
+index 83a6db8d7116681cccdd5ce55d5fced653972856..befb61cb7f336b0904d1c96d323dce04f0c1f26c 100644
+--- a/src/vs/workbench/contrib/search/browser/replaceService.ts
++++ b/src/vs/workbench/contrib/search/browser/replaceService.ts
+@@ -25,6 +25,8 @@ import { Range } from 'vs/editor/common/core/range';
+ import { EditOperation } from 'vs/editor/common/core/editOperation';
+ import { mergeSort } from 'vs/base/common/arrays';
+ 
++declare var wb_monaco: any;
++
+ const REPLACE_PREVIEW = 'replacePreview';
+ 
+ const toReplaceResource = (fileResource: URI): URI => {
+@@ -103,7 +105,11 @@ export class ReplaceService implements IReplaceService {
+ 		const edits = this.createEdits(arg, resource);
+ 		await this.bulkEditorService.apply(edits, { progress });
+ 
+-		return Promise.all(edits.map(e => this.textFileService.files.get(e.resource)?.save()));
++		return Promise.all(edits.map(e => {
++			const t = this.textFileService.files.get(e.resource);
++			return !t ? void 0 :
++				wb_monaco.invalidate(e.resource.path).then(function () {return t.save()})}))
++		
+ 	}
+ 
+ 	async openReplacePreview(element: FileMatchOrMatch, preserveFocus?: boolean, sideBySide?: boolean, pinned?: boolean): Promise<any> {
+diff --git a/src/vs/workbench/contrib/search/browser/searchView.ts b/src/vs/workbench/contrib/search/browser/searchView.ts
+index 2a53fe463566e67328f7bccca9d6aa1e0814337e..9dfc16d938edcc564daeb0b5ebe1f4b95a0fae11 100644
+--- a/src/vs/workbench/contrib/search/browser/searchView.ts
++++ b/src/vs/workbench/contrib/search/browser/searchView.ts
+@@ -71,6 +71,8 @@ import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
+ import { Orientation } from 'vs/base/browser/ui/sash/sash';
+ import { searchDetailsIcon } from 'vs/workbench/contrib/search/browser/searchIcons';
+ 
++declare var wb_monaco: any;
++
+ const $ = dom.$;
+ 
+ enum SearchUIState {
+@@ -656,35 +658,36 @@ export class SearchView extends ViewPane {
+ 	}
+ 
+ 	private buildReplaceAllConfirmationMessage(occurrences: number, fileCount: number, replaceValue?: string) {
++		const wb_replaceWarning = (wb_monaco.disabled ? "" : "In collaborative mode, replace operations may not succeed. After replacing, rerun search to verify completion.");
+ 		if (occurrences === 1) {
+ 			if (fileCount === 1) {
+ 				if (replaceValue) {
+-					return nls.localize('removeAll.occurrence.file.confirmation.message', "Replace {0} occurrence across {1} file with '{2}'?", occurrences, fileCount, replaceValue);
++					return nls.localize('removeAll.occurrence.file.confirmation.message', "Replace {0} occurrence across {1} file with '{2}'? {3}", occurrences, fileCount, replaceValue, wb_replaceWarning);
+ 				}
+ 
+-				return nls.localize('replaceAll.occurrence.file.confirmation.message', "Replace {0} occurrence across {1} file?", occurrences, fileCount);
++				return nls.localize('replaceAll.occurrence.file.confirmation.message', "Replace {0} occurrence across {1} file? {2}", occurrences, fileCount, wb_replaceWarning);
+ 			}
+ 
+ 			if (replaceValue) {
+-				return nls.localize('removeAll.occurrence.files.confirmation.message', "Replace {0} occurrence across {1} files with '{2}'?", occurrences, fileCount, replaceValue);
++				return nls.localize('removeAll.occurrence.files.confirmation.message', "Replace {0} occurrence across {1} files with '{2}'? {3}", occurrences, fileCount, replaceValue, wb_replaceWarning);
+ 			}
+ 
+-			return nls.localize('replaceAll.occurrence.files.confirmation.message', "Replace {0} occurrence across {1} files?", occurrences, fileCount);
++			return nls.localize('replaceAll.occurrence.files.confirmation.message', "Replace {0} occurrence across {1} files? {2}", occurrences, fileCount, wb_replaceWarning);
+ 		}
+ 
+ 		if (fileCount === 1) {
+ 			if (replaceValue) {
+-				return nls.localize('removeAll.occurrences.file.confirmation.message', "Replace {0} occurrences across {1} file with '{2}'?", occurrences, fileCount, replaceValue);
++				return nls.localize('removeAll.occurrences.file.confirmation.message', "Replace {0} occurrences across {1} file with '{2}'? {3}", occurrences, fileCount, replaceValue, wb_replaceWarning);
+ 			}
+ 
+-			return nls.localize('replaceAll.occurrences.file.confirmation.message', "Replace {0} occurrences across {1} file?", occurrences, fileCount);
++			return nls.localize('replaceAll.occurrences.file.confirmation.message', "Replace {0} occurrences across {1} file? {2}", occurrences, fileCount, wb_replaceWarning);
+ 		}
+ 
+ 		if (replaceValue) {
+-			return nls.localize('removeAll.occurrences.files.confirmation.message', "Replace {0} occurrences across {1} files with '{2}'?", occurrences, fileCount, replaceValue);
++			return nls.localize('removeAll.occurrences.files.confirmation.message', "Replace {0} occurrences across {1} files with '{2}'? {3}", occurrences, fileCount, replaceValue, wb_replaceWarning);
+ 		}
+ 
+-		return nls.localize('replaceAll.occurrences.files.confirmation.message', "Replace {0} occurrences across {1} files?", occurrences, fileCount);
++		return nls.localize('replaceAll.occurrences.files.confirmation.message', "Replace {0} occurrences across {1} files? {2}", occurrences, fileCount, wb_replaceWarning);
+ 	}
+ 
+ 	private clearMessage(): HTMLElement {
 diff --git a/src/vs/workbench/electron-sandbox/sandbox.simpleservices.ts b/src/vs/workbench/electron-sandbox/sandbox.simpleservices.ts
 index d57009a5a251ac5815c04e4f76bacef3e518a575..e825a8975449e95cf40504057d56579c12918a58 100644
 --- a/src/vs/workbench/electron-sandbox/sandbox.simpleservices.ts
@@ -3239,18 +4877,35 @@ index 1360c248eb7ff937c92d08bbf30d2b76ea606dc0..adccf8b88d62381c3ec484df40c6d631
  		};
  
 diff --git a/src/vs/workbench/services/environment/browser/environmentService.ts b/src/vs/workbench/services/environment/browser/environmentService.ts
-index 8d5e0fb796661c63bf46a377607977f4b1f0b2ad..9f5da5da9435626419be5447577d20dcb408e78d 100644
+index 8d5e0fb796661c63bf46a377607977f4b1f0b2ad..c71861e744d50e63580752021c2167280691d270 100644
 --- a/src/vs/workbench/services/environment/browser/environmentService.ts
 +++ b/src/vs/workbench/services/environment/browser/environmentService.ts
-@@ -112,8 +112,18 @@ export class BrowserWorkbenchEnvironmentService implements IWorkbenchEnvironment
+@@ -16,6 +16,8 @@ import { memoize } from 'vs/base/common/decorators';
+ import { onUnexpectedError } from 'vs/base/common/errors';
+ import { parseLineAndColumnAware } from 'vs/base/common/extpath';
+ 
++declare var wb_monaco: any
++
+ class BrowserWorkbenchConfiguration implements IWindowConfiguration {
+ 
+ 	constructor(
+@@ -112,17 +114,35 @@ export class BrowserWorkbenchEnvironmentService implements IWorkbenchEnvironment
  	@memoize
  	get logFile(): URI { return joinPath(this.options.logsPath, 'window.log'); }
  
 +	// NOTE@coder: Use the regular path for extensions that write directly to disk
 +	// instead of using the VS Code API.
++
++	//@memoize
++	//get userRoamingDataHome(): URI { return joinPath(URI.file(this.userDataPath).with({ scheme: Schemas.userData }), 'User'); }
++
++	@memoize
++	get userRoamingDataHome(): URI { return joinPath(URI.file(this.userDataPath).with({ scheme: Schemas.vscodeRemote }), 'User'); }
++	
  	@memoize
 -	get userRoamingDataHome(): URI { return URI.file('/User').with({ scheme: Schemas.userData }); }
-+	get userRoamingDataHome(): URI { return URI.file(this.userDataPath).with({ scheme: Schemas.userData }); }
++	get userRoamingDataSettings(): URI { return joinPath(URI.file(this.userDataPath).with({ scheme: Schemas.vscodeRemote }), 'User' , wb_monaco.currentUser); }
++	
 +	@memoize
 +	get userDataPath(): string {
 +		const dataPath = this.payload?.get("userDataPath");
@@ -3261,8 +4916,41 @@ index 8d5e0fb796661c63bf46a377607977f4b1f0b2ad..9f5da5da9435626419be5447577d20dc
 +	}
  
  	@memoize
- 	get settingsResource(): URI { return joinPath(this.userRoamingDataHome, 'settings.json'); }
-@@ -275,7 +285,12 @@ export class BrowserWorkbenchEnvironmentService implements IWorkbenchEnvironment
+-	get settingsResource(): URI { return joinPath(this.userRoamingDataHome, 'settings.json'); }
++	get settingsResource(): URI { return joinPath(this.userRoamingDataSettings, 'settings.json'); }
+ 
+ 	@memoize
+ 	get argvResource(): URI { return joinPath(this.userRoamingDataHome, 'argv.json'); }
+ 
+ 	@memoize
+-	get snippetsHome(): URI { return joinPath(this.userRoamingDataHome, 'snippets'); }
++	get snippetsHome(): URI { return joinPath(this.userRoamingDataSettings, 'snippets'); }
+ 
+ 	@memoize
+ 	get globalStorageHome(): URI { return URI.joinPath(this.userRoamingDataHome, 'globalStorage'); }
+@@ -136,7 +156,7 @@ export class BrowserWorkbenchEnvironmentService implements IWorkbenchEnvironment
+ 	 * Sync scoped to a workspace is capable of handling opening same workspace in multiple windows.
+ 	 */
+ 	@memoize
+-	get userDataSyncHome(): URI { return joinPath(this.userRoamingDataHome, 'sync', this.options.workspaceId); }
++	get userDataSyncHome(): URI { return joinPath(this.userRoamingDataSettings, 'sync', this.options.workspaceId); }
+ 
+ 	@memoize
+ 	get userDataSyncLogResource(): URI { return joinPath(this.options.logsPath, 'userDataSync.log'); }
+@@ -145,10 +165,10 @@ export class BrowserWorkbenchEnvironmentService implements IWorkbenchEnvironment
+ 	get sync(): 'on' | 'off' | undefined { return undefined; }
+ 
+ 	@memoize
+-	get keybindingsResource(): URI { return joinPath(this.userRoamingDataHome, 'keybindings.json'); }
++	get keybindingsResource(): URI { return joinPath(this.userRoamingDataSettings, 'keybindings.json'); }
+ 
+ 	@memoize
+-	get keyboardLayoutResource(): URI { return joinPath(this.userRoamingDataHome, 'keyboardLayout.json'); }
++	get keyboardLayoutResource(): URI { return joinPath(this.userRoamingDataSettings, 'keyboardLayout.json'); }
+ 
+ 	@memoize
+ 	get backupWorkspaceHome(): URI { return joinPath(this.userRoamingDataHome, 'Backups', this.options.workspaceId); }
+@@ -275,7 +295,12 @@ export class BrowserWorkbenchEnvironmentService implements IWorkbenchEnvironment
  						extensionHostDebugEnvironment.params.port = parseInt(value);
  						break;
  					case 'enableProposedApi':
@@ -3422,6 +5110,32 @@ index b39a5cbb9eadbc046144d2e76d26a9b0e950ddaa..3b4cc7274e149ee10dba0dbbb09cf259
  	});
  
  	require(['vs/workbench/services/extensions/worker/extensionHostWorker'], () => { }, err => console.error(err));
+diff --git a/src/vs/workbench/services/filesConfiguration/common/filesConfigurationService.ts b/src/vs/workbench/services/filesConfiguration/common/filesConfigurationService.ts
+index 1cc2b478326474c3fee3321fde0b59efd6fd4ba8..9b3c99053b60972b068bc0356d6aa7cfdd4d8016 100644
+--- a/src/vs/workbench/services/filesConfiguration/common/filesConfigurationService.ts
++++ b/src/vs/workbench/services/filesConfiguration/common/filesConfigurationService.ts
+@@ -15,6 +15,8 @@ import { equals } from 'vs/base/common/objects';
+ import { URI } from 'vs/base/common/uri';
+ import { isWeb } from 'vs/base/common/platform';
+ 
++declare var wb_monaco: any;
++
+ export const AutoSaveAfterShortDelayContext = new RawContextKey<boolean>('autoSaveAfterShortDelayContext', false);
+ 
+ export interface IAutoSaveConfiguration {
+@@ -111,10 +113,10 @@ export class FilesConfigurationService extends Disposable implements IFilesConfi
+ 	protected onFilesConfigurationChange(configuration: IFilesConfiguration): void {
+ 
+ 		// Auto Save
+-		const autoSaveMode = configuration?.files?.autoSave || FilesConfigurationService.DEFAULT_AUTO_SAVE_MODE;
++		const autoSaveMode = (wb_monaco.disabled?configuration?.files?.autoSave:false) || FilesConfigurationService.DEFAULT_AUTO_SAVE_MODE;
+ 		switch (autoSaveMode) {
+ 			case AutoSaveConfiguration.AFTER_DELAY:
+-				this.configuredAutoSaveDelay = configuration?.files?.autoSaveDelay;
++				this.configuredAutoSaveDelay = (wb_monaco.disabled?configuration?.files?.autoSaveDelay:wb_monaco.autoSaveDelay);
+ 				this.configuredAutoSaveOnFocusChange = false;
+ 				this.configuredAutoSaveOnWindowChange = false;
+ 				break;
 diff --git a/src/vs/workbench/services/localizations/electron-browser/localizationsService.ts b/src/vs/workbench/services/localizations/electron-browser/localizationsService.ts
 index d7aefde89c74bc6096d6e66c45368c8582594efa..9758f3bb96b48603251336e6a64e270ee89744f0 100644
 --- a/src/vs/workbench/services/localizations/electron-browser/localizationsService.ts
@@ -3447,6 +5161,100 @@ index d7aefde89c74bc6096d6e66c45368c8582594efa..9758f3bb96b48603251336e6a64e270e
 +		return createChannelSender<ILocalizationsService>(remoteAgentService.getConnection()!.getChannel('localizations'));
  	}
  }
+ 
+diff --git a/src/vs/workbench/services/remote/common/remoteAgentEnvironmentChannel.ts b/src/vs/workbench/services/remote/common/remoteAgentEnvironmentChannel.ts
+index 5ed9d1e29bf31dec8f317758db37a494ed2871cb..90b513669b1bf63c0c95c85cd07bf20699d370d0 100644
+--- a/src/vs/workbench/services/remote/common/remoteAgentEnvironmentChannel.ts
++++ b/src/vs/workbench/services/remote/common/remoteAgentEnvironmentChannel.ts
+@@ -10,6 +10,9 @@ import { IExtensionDescription, ExtensionIdentifier } from 'vs/platform/extensio
+ import { IRemoteAgentEnvironment } from 'vs/platform/remote/common/remoteAgentEnvironment';
+ import { IDiagnosticInfoOptions, IDiagnosticInfo } from 'vs/platform/diagnostics/common/diagnostics';
+ import { ITelemetryData } from 'vs/platform/telemetry/common/telemetry';
++import { joinPath } from 'vs/base/common/resources';
++
++declare var wb_monaco: any
+ 
+ export interface IGetEnvironmentDataArguments {
+ 	remoteAuthority: string;
+@@ -56,7 +59,8 @@ export class RemoteExtensionEnvironmentChannelClient {
+ 			pid: data.pid,
+ 			connectionToken: data.connectionToken,
+ 			appRoot: URI.revive(data.appRoot),
+-			settingsPath: URI.revive(data.settingsPath),
++			settingsPath: joinPath(URI.revive(data.settingsPath), wb_monaco.currentUser),
++			//settingsPath: URI.revive(data.settingsPath),
+ 			logsPath: URI.revive(data.logsPath),
+ 			extensionsPath: URI.revive(data.extensionsPath),
+ 			extensionHostLogsPath: URI.revive(data.extensionHostLogsPath),
+diff --git a/src/vs/workbench/services/textfile/common/textFileEditorModel.ts b/src/vs/workbench/services/textfile/common/textFileEditorModel.ts
+index a6a60d5883b64ef6e2fe2c7883171a8870ac8224..d8ae7c4c1f3e3969a216dbca773154bd77052097 100644
+--- a/src/vs/workbench/services/textfile/common/textFileEditorModel.ts
++++ b/src/vs/workbench/services/textfile/common/textFileEditorModel.ts
+@@ -24,6 +24,8 @@ import { IFilesConfigurationService } from 'vs/workbench/services/filesConfigura
+ import { ILabelService } from 'vs/platform/label/common/label';
+ import { CancellationTokenSource } from 'vs/base/common/cancellation';
+ 
++declare var wb_monaco: any;
++
+ interface IBackupMetaData {
+ 	mtime: number;
+ 	ctime: number;
+@@ -735,7 +737,7 @@ export class TextFileEditorModel extends BaseTextEditorModel implements ITextFil
+ 						overwriteEncoding: options.overwriteEncoding,
+ 						mtime: lastResolvedFileStat.mtime,
+ 						encoding: this.getEncoding(),
+-						etag: (options.ignoreModifiedSince || !this.filesConfigurationService.preventSaveConflicts(lastResolvedFileStat.resource, textFileEditorModel.getMode())) ? ETAG_DISABLED : lastResolvedFileStat.etag,
++						etag: ((wb_monaco.disabled?options.ignoreModifiedSince:true) || !this.filesConfigurationService.preventSaveConflicts(lastResolvedFileStat.resource, textFileEditorModel.getMode())) ? ETAG_DISABLED : lastResolvedFileStat.etag,
+ 						writeElevated: options.writeElevated
+ 					});
+ 
+diff --git a/src/vs/workbench/services/themes/browser/workbenchThemeService.ts b/src/vs/workbench/services/themes/browser/workbenchThemeService.ts
+index 36b7fd663c306a56fcc2e781c7e7cc8fbe1a9f4c..54f9f30d5d4982e88130ccbba7dc66b2d06952d3 100644
+--- a/src/vs/workbench/services/themes/browser/workbenchThemeService.ts
++++ b/src/vs/workbench/services/themes/browser/workbenchThemeService.ts
+@@ -39,6 +39,8 @@ import { IHostColorSchemeService } from 'vs/workbench/services/themes/common/hos
+ import { CodiconStyles } from 'vs/base/browser/ui/codicons/codiconStyles';
+ import { RunOnceScheduler } from 'vs/base/common/async';
+ 
++declare var wb_monaco: any;
++
+ // implementation
+ 
+ const DEFAULT_COLOR_THEME_ID = 'vs-dark vscode-theme-defaults-themes-dark_plus-json';
+diff --git a/src/vs/workbench/services/workingCopy/common/workingCopyFileService.ts b/src/vs/workbench/services/workingCopy/common/workingCopyFileService.ts
+index 6c5dc19408344c780e9080673ccdc7cf15c93387..08dc628029f900bd5d59188cb2ee7c3a11df3922 100644
+--- a/src/vs/workbench/services/workingCopy/common/workingCopyFileService.ts
++++ b/src/vs/workbench/services/workingCopy/common/workingCopyFileService.ts
+@@ -17,6 +17,8 @@ import { IProgress, IProgressStep } from 'vs/platform/progress/common/progress';
+ import { WorkingCopyFileOperationParticipant } from 'vs/workbench/services/workingCopy/common/workingCopyFileOperationParticipant';
+ import { VSBuffer, VSBufferReadable, VSBufferReadableStream } from 'vs/base/common/buffer';
+ 
++declare var wb_monaco: any;
++
+ export const IWorkingCopyFileService = createDecorator<IWorkingCopyFileService>('workingCopyFileService');
+ 
+ interface SourceTargetPair {
+@@ -348,6 +350,7 @@ export class WorkingCopyFileService extends Disposable implements IWorkingCopyFi
+ 		// now actually delete from disk
+ 		try {
+ 			for (const resource of resources) {
++				wb_monaco.invalidate(resource.path);
+ 				await this.fileService.del(resource, options);
+ 			}
+ 		} catch (error) {
+diff --git a/src/vs/workbench/workbench.common.main.ts b/src/vs/workbench/workbench.common.main.ts
+index 5adea5d1a7255bac58da906bf93e6bc1419f773d..4aad9c30391813cad0a13e10c023c2673ad71612 100644
+--- a/src/vs/workbench/workbench.common.main.ts
++++ b/src/vs/workbench/workbench.common.main.ts
+@@ -135,6 +135,9 @@ registerSingleton(IOpenerService, OpenerService, true);
+ 
+ //#region --- workbench contributions
+ 
++// Collab API
++import 'vs/workbench/contrib/coderpair/browser/coderpair.contribution';
++
+ // Telemetry
+ import 'vs/workbench/contrib/telemetry/browser/telemetry.contribution';
  
 diff --git a/src/vs/workbench/workbench.web.main.ts b/src/vs/workbench/workbench.web.main.ts
 index 59208b87022c74342489288c1a3c89937aa6d37e..f49153db796e59a5aed0cc56ea5d01c0f10f963e 100644

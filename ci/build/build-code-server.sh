@@ -29,6 +29,7 @@ main() {
     --out-dir dist \
     $([[ $MINIFY ]] || echo --no-minify) \
     src/browser/register.ts \
+    src/browser/pages/app.ts \
     src/browser/serviceWorker.ts \
     src/browser/pages/login.ts \
     src/browser/pages/vscode.ts

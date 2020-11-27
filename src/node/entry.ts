@@ -5,11 +5,13 @@ import http from "http"
 import * as path from "path"
 import { CliMessage, OpenCommandPipeArgs } from "../../lib/vscode/src/vs/server/ipc"
 import { plural } from "../common/util"
+import { ApiHttpProvider } from "./app/api"
 import { HealthHttpProvider } from "./app/health"
 import { LoginHttpProvider } from "./app/login"
 import { ProxyHttpProvider } from "./app/proxy"
 import { StaticHttpProvider } from "./app/static"
 import { UpdateHttpProvider } from "./app/update"
+import { DashboardHttpProvider } from "./app/dashboard"
 import { VscodeHttpProvider } from "./app/vscode"
 import {
   Args,
@@ -23,10 +25,14 @@ import {
 } from "./cli"
 import { coderCloudBind } from "./coder-cloud"
 import { AuthType, HttpServer, HttpServerOptions } from "./http"
+import { AppSettings } from "./app"
 import { loadPlugins } from "./plugin"
 import { generateCertificate, hash, humanPath, open } from "./util"
 import { ipcMain, WrapperProcess } from "./wrapper"
+import firebase from 'firebase'
 
+let firebaseApp:any = null
+    
 let pkg: { version?: string; commit?: string } = {}
 try {
   pkg = require("../../package.json")
@@ -147,8 +153,25 @@ const main = async (args: Args, configArgs: Args): Promise<void> => {
   if (args.auth === AuthType.Password && !password) {
     throw new Error("Please pass in a password via the config file or $PASSWORD")
   }
-  const [host, port] = bindAddrFromAllSources(args, configArgs)
+    // Initialize Firebase
+  const firebaseConfig = {
+    apiKey: args["firebase-apiKey"] || '<API_KEY>',
+    authDomain: args["firebase-authDomain"],
+    databaseURL: args["firebase-databaseURL"] 
+  }
 
+  if(args["firebase-authDomain"]){
+    firebaseApp = firebase.initializeApp(firebaseConfig)
+    console.log("init firebase...")
+  }else{
+    console.log("No firebase configuration specified...Skipping...")
+  }
+  
+  const ref = (args["firebase-authDomain"]?firebaseApp.database().ref():null)
+  const childref = (args["firebase-authDomain"]?ref.child(args["firebase-ref"]):null)
+    
+  const [host, port] = bindAddrFromAllSources(args, configArgs)
+ 
   // Spawn the main HTTP server.
   const options: HttpServerOptions = {
     auth: args.auth,
@@ -156,6 +179,8 @@ const main = async (args: Args, configArgs: Args): Promise<void> => {
     host: host,
     // The hash does not add any actual security but we do it for obfuscation purposes.
     password: password ? hash(password) : undefined,
+    admin: hash(args.admin || 'admin'),
+    users: args.users || undefined,
     port: port,
     proxyDomains: args["proxy-domain"],
     socket: args.socket,
@@ -166,18 +191,30 @@ const main = async (args: Args, configArgs: Args): Promise<void> => {
           certKey: args["cert-key"],
         }),
   }
+  // Application settings
+  const appSettings:  AppSettings = {
+    disabled: false,
+    useCollaboration: false,
+    ref: childref,
+    "firebase-apiKey": args["firebase-apiKey"],
+    "firebase-authDomain": args["firebase-authDomain"],
+    "firebase-databaseURL": args["firebase-databaseURL"],
+    "firebase-ref": args["firebase-ref"],
+  }
 
   if (options.cert && !options.certKey) {
     throw new Error("--cert-key is missing")
   }
 
   const httpServer = new HttpServer(options)
-  httpServer.registerHttpProvider(["/", "/vscode"], VscodeHttpProvider, args)
-  httpServer.registerHttpProvider("/update", UpdateHttpProvider, false)
+  const vscode = httpServer.registerHttpProvider(["/", "/vscode"], VscodeHttpProvider, appSettings, args)
+  const api = httpServer.registerHttpProvider("/api", ApiHttpProvider, httpServer, vscode, args["user-data-dir"])
+  const update = httpServer.registerHttpProvider("/update", UpdateHttpProvider, false)
   httpServer.registerHttpProvider("/proxy", ProxyHttpProvider)
   httpServer.registerHttpProvider("/login", LoginHttpProvider, args.config!, envPassword)
   httpServer.registerHttpProvider("/static", StaticHttpProvider)
   httpServer.registerHttpProvider("/healthz", HealthHttpProvider, httpServer.heart)
+  httpServer.registerHttpProvider("/dashboard", DashboardHttpProvider, api, update, httpServer, appSettings)
 
   await loadPlugins(httpServer, args)
 
@@ -197,7 +234,7 @@ const main = async (args: Args, configArgs: Args): Promise<void> => {
     if (envPassword) {
       logger.info("    - Using password from $PASSWORD")
     } else {
-      logger.info(`    - Using password from ${humanPath(args.config)}`)
+      logger.info(`    - Using passwords from ${humanPath(args.config)}`)
     }
     logger.info("    - To disable use `--auth none`")
   } else {
@@ -245,7 +282,6 @@ async function entry(): Promise<void> {
   // This prioritizes the flags set in args over the ones in the config file.
   let args = Object.assign(configArgs, cliArgs)
   args = await setDefaults(args)
-
   // There's no need to check flags like --help or to spawn in an existing
   // instance for the child process because these would have already happened in
   // the parent and the child wouldn't have been spawned.

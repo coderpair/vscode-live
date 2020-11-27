@@ -14,10 +14,15 @@ import * as url from "url"
 import { HttpCode, HttpError } from "../common/http"
 import { arrayify, normalize, Options, plural, split, trimSlashes } from "../common/util"
 import { SocketProxyProvider } from "./socket"
-import { getMediaMime, paths } from "./util"
+import { getMediaMime, hash, paths } from "./util"
 
 export type Cookies = { [key: string]: string[] | undefined }
 export type PostData = { [key: string]: string | string[] | undefined }
+
+export interface IAuthUser {
+  user:string,
+	key: string
+}
 
 interface ProxyRequest extends http.IncomingMessage {
   base?: string
@@ -129,6 +134,8 @@ export interface HttpServerOptions {
   readonly commit?: string
   readonly host?: string
   readonly password?: string
+  readonly users?:any
+  readonly admin?:string
   readonly port?: number
   readonly proxyDomains?: string[]
   readonly socket?: string
@@ -168,8 +175,11 @@ interface ProviderRoute extends Route {
 
 export interface HttpProviderOptions {
   readonly auth: AuthType
+  readonly base: string
   readonly commit: string
   readonly password?: string
+  readonly users?: any
+  readonly admin?: string
 }
 
 /**
@@ -309,7 +319,7 @@ export abstract class HttpProvider {
    * Return the provided password value if the payload contains the right
    * password otherwise return false. If no payload is specified use cookies.
    */
-  public authenticated(request: http.IncomingMessage, payload?: AuthPayload): string | boolean {
+  public authenticated(request: http.IncomingMessage, payload?: AuthPayload): IAuthUser | boolean {
     switch (this.options.auth) {
       case AuthType.None:
         return true
@@ -320,7 +330,16 @@ export abstract class HttpProvider {
         if (this.options.password && payload.key) {
           for (let i = 0; i < payload.key.length; ++i) {
             if (safeCompare(payload.key[i], this.options.password)) {
-              return payload.key[i]
+              return {user: 'default' , key: payload.key[i]}
+            }
+          }
+        }
+        if(this.options.users && payload.key){
+          for(let user in this.options.users){
+            for (let i = 0; i < payload.key.length; ++i) {
+              if (safeCompare(payload.key[i], hash(this.options.users[user].password))) {
+                return {user: user , key: payload.key[i]}
+              }
             }
           }
         }
@@ -329,6 +348,21 @@ export abstract class HttpProvider {
         throw new Error(`Unsupported auth type ${this.options.auth}`)
     }
   }
+    
+    /**
+    * Return the provided password value if the payload contains the right
+    * password otherwise return false.
+    */
+    public adminAuthenticated(request: http.IncomingMessage, payload?: AuthPayload): string | boolean {
+       if (this.options.admin && payload && payload.key) {
+         for (let i = 0; i < payload.key.length; ++i) {
+           if (safeCompare(payload.key[i], this.options.admin)) {
+              return payload.key[i];
+           }
+         }
+       }
+       return false;
+    };
 
   /**
    * Parse POST data.
@@ -450,6 +484,10 @@ export interface HttpProvider3<A1, A2, A3, T> {
   new (options: HttpProviderOptions, a1: A1, a2: A2, a3: A3): T
 }
 
+export interface HttpProvider4<A1, A2, A3, A4, T> {
+  new (options: HttpProviderOptions, a1: A1, a2: A2, a3: A3, a4: A4): T
+}
+
 /**
  * An HTTP server. Its main role is to route incoming HTTP requests to the
  * appropriate provider for that endpoint then write out the response. It also
@@ -460,6 +498,7 @@ export class HttpServer {
   private listenPromise: Promise<string | null> | undefined
   public readonly protocol: "http" | "https"
   private readonly providers = new Map<string, HttpProvider>()
+  public sockets = new Set<net.Socket>();
   public readonly heart: Heart
   private readonly socketProvider = new SocketProxyProvider()
 
@@ -503,12 +542,22 @@ export class HttpServer {
       }
     })
   }
+    
+    public disable(): void {
+          console.log("disconnect");
+          this.sockets.forEach(socket => socket.destroy());
+          this.sockets.clear();
+          this.socketProvider.stop();
+          const provider = this.providers.get("/")
+          if(provider)provider.dispose();
+    };
 
   /**
    * Stop and dispose everything. Return an array of disposal errors.
    */
   public async dispose(): Promise<Error[]> {
     this.socketProvider.stop()
+    this.sockets.clear()
     const providers = Array.from(this.providers.values())
     // Catch so all the errors can be seen rather than just the first one.
     const responses = await Promise.all<Error | undefined>(providers.map((p) => p.dispose().catch((e) => e)))
@@ -545,14 +594,24 @@ export class HttpServer {
     a2: A2,
     a3: A3,
   ): T
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  public registerHttpProvider(endpoint: string | string[], provider: any, ...args: any[]): void {
+  public registerHttpProvider<A1, A2, A3, A4, T extends HttpProvider>(
+    endpoint: string | string[],
+    provider: HttpProvider4<A1, A2, A3, A4, T>,
+    a1: A1,
+    a2: A2,
+    a3: A3,
+    a4: A4,
+  ): T
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  public registerHttpProvider(endpoint: string | string[], provider: any, ...args: any[]): any {
     const p = new provider(
       {
         auth: this.options.auth || AuthType.None,
         commit: this.options.commit,
         password: this.options.password,
-      },
+        admin: this.options.admin,
+        users: this.options.users
+    },
       ...args,
     )
     const endpoints = arrayify(endpoint).map(trimSlashes)
@@ -571,6 +630,7 @@ export class HttpServer {
         }
       }
     })
+    return p
   }
 
   /**
@@ -760,14 +820,16 @@ export class HttpServer {
       // The socket proxy is so we can pass them to child processes (TLS sockets
       // can't be transferred so we need an in-between).
       const socketProxy = await this.socketProvider.createProxy(socket)
+      this.sockets.add(socket);
       const payload =
         this.maybeProxy(route, request) || (await route.provider.handleWebSocket(route, request, socketProxy, head))
       if (payload && payload.proxy) {
         this.doProxy(route, request, { socket: socketProxy, head }, payload.proxy)
       }
     } catch (error) {
-      socket.destroy(error)
-      logger.warn(`discarding socket connection: ${error.message}`)
+        this.sockets.delete(socket);
+        socket.destroy(error)
+        logger.warn(`discarding socket connection: ${error.message}`)
     }
   }
 

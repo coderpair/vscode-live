@@ -1,0 +1,146 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no"
+    />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="style-src 'self' 'unsafe-inline'; manifest-src 'self'; img-src 'self' data:; font-src 'self' data:;"
+    />
+    <title>code-server</title>
+    <link rel="icon" href="{{CS_STATIC_BASE}}/src/browser/media/favicon.ico" type="image/x-icon" />
+    <link
+      rel="manifest"
+      href="{{CS_STATIC_BASE}}/src/browser/media/manifest.json"
+      crossorigin="use-credentials"
+    />
+    <script type = "text/javascript"
+        src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script type = "text/javascript" src = "https://ajax.googleapis.com/ajax/libs/jqueryui/1.12.1/jquery-ui.min.js">
+    </script>
+    <link rel="apple-touch-icon" href="{{CS_STATIC_BASE}}/src/browser/media/pwa-icon-384.png" />
+    <link href="{{CS_STATIC_BASE}}/dist/pages/app.css" rel="stylesheet" />
+    <meta id="coder-options" data-settings="{{OPTIONS}}" />
+  </head>
+  <body>
+    <div class="center-container">
+      <div class="card-box">
+        <div class="header">
+          <h2 class="main">Editors</h2>
+          <div class="sub">Choose an editor to launch below.</div>
+        </div>
+        <div class="content">
+          {{APP_LIST:EDITORS}}
+        </div>
+      </div>
+
+      <div class="card-box">
+        <div class="header">
+          <h2 class="main">Other</h2>
+          <div class="sub">Choose an application to launch below.</div>
+        </div>
+        <div class="content">
+          {{APP_LIST:OTHER}}
+        </div>
+      </div>
+      <div class="card-box">
+        <div class="header">
+          <h2 class="main">Collaboration</h2>
+          <div class="sub">Real-time collaboration options.</div>
+        </div>
+        <div class="content">
+          <form class="login-form" id='collab-form' method="post">
+            <span><b>Turn on real-time collaboration &nbsp;</b></span><label class="switch">
+              <input name="collaboration" type="checkbox" {{COLLAB_CHECKED}}>
+              <span class="slider round"></span>
+            </label> &nbsp;&nbsp;<span id='collab-status'>{{COLLAB}}</span>
+            <p> </p>
+            <span><b>Reset Database &nbsp;</b></span><label class="switch">
+              <input id="reset1" name="reset1" type="checkbox" >
+              <span class="slider round"></span>
+            </label>&nbsp;&nbsp;<span id='reset-status'></span>
+            <p style='color:grey'>Causes the remote real-time database to reset and sync with the remote filesystem</p>
+            <span><b>Disable VS Code Server &nbsp;</b></span><label class="switch">
+              <input name="disable" type="checkbox" {{VSCODE_SERVER_CHECKED}}>
+              <span class="slider round"></span>
+            </label> &nbsp;&nbsp;<span id='disable-status'>{{VSCODE_SERVER}}</span>
+            <p style='color:grey'>When real-time collaboration is enabled,
+              you must disable the VS Code server before making any changes to the remote filesystem from outside the VS Code editor (that includes changes made from the terminal or via Github).
+              Failing to do so may result in loss of data. After making the changes, re-enable the server. The real-time database will automatically resync with the remote filesystem.</p>
+            <p>Enter your admin password and press submit to commit changes.</p>
+            <input class="user" type="text" autocomplete="username" />
+            <input id="base" type="hidden" name="base" value="/" />
+            <input id="form_id" type="hidden" name="form_id" value="1" />
+            <div class="field">
+              <input
+                id="pswd"
+                required
+                autofocus
+                class="password"
+                type="password"
+                placeholder="PASSWORD"
+                name="admin"
+                autocomplete="current-password"
+                value=""
+              />
+              <input class="submit -button" value="SUBMIT" type="submit" />
+            </div>
+            <span id="collab_error">{{ERROR}}</span>
+          </form>
+        </div>
+      </div>
+
+      <div class="card-box">
+        <div class="header">
+          <h2 class="main">Version</h2>
+          <div class="sub">Version information and updates.</div>
+        </div>
+        <div class="content">
+          {{UPDATE:NAME}}
+        </div>
+      </div>
+    </div>
+    <script>
+        $("#collab-form").submit(function(e) {
+            e.preventDefault(); // avoid to execute the actual submit of the form.
+            var form = $(this);
+            var url = form.attr('action');
+            $.ajax({
+                type: "POST",
+                url: url,
+                data: form.serialize(), // serializes the form's elements.
+                success: function(data)
+                {
+                    data = JSON.parse(data);
+                    if(data){
+                        if(data.admin){
+                            $('#collab-status').html((data.collab?"<span style='color:#66b2ff;font-weight:bold'>Enabled</span>":"<span style='color:#ff6666;font-weight:bold'>Disabled</span>"));
+                            $('#reset-status').show().html((data.reset?"<span style='color:#66b2ff;font-weight:bold'>Database Reset</span>":""));
+                            $('#disable-status').html((data.disable?"<span style='color:#ff6666;font-weight:bold'>Server Offline</span>":"<span style='color:#66b2ff;font-weight:bold'>Server Running</span>"))
+                            $('#reset1').prop("checked",false);
+                            $( '#reset-status').delay( 2000 ).fadeOut( 400 );
+                        }
+                        
+                        $('#pswd').val("");
+                        if(data.err){
+                            $('#collab_error').html("<div id='frm1_err' style='padding:15px;color:#ff6666;font-weight:bold' class='error'>"+data.err+"</div>");
+                        }else{
+                            $('#collab_error').html(data.admin?"":"<div id='frm1_err' style='padding:15px;color:#ff6666;font-weight:bold' class='error'>Incorrect Password</div>");
+                        }
+                        if(!data.admin){
+                            $('#frm1_err').effect( "shake" );
+                        }
+                    }
+                }
+            });
+        });
+    </script>
+    <script data-cfasync="false" src="{{CS_STATIC_BASE}}/dist/register.js"></script>
+    <script data-cfasync="false" src="{{CS_STATIC_BASE}}/dist/pages/app.js"></script>
+  </body>
+</html>
+

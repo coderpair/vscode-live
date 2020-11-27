@@ -3,7 +3,7 @@ body {
 }
 
 .login-form {
-  display: flex;
+  display: block;
   flex-direction: column;
   flex: 1;
   justify-content: center;

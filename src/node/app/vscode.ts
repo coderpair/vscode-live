@@ -16,7 +16,8 @@ import {
 import { HttpCode, HttpError } from "../../common/http"
 import { arrayify, generateUuid } from "../../common/util"
 import { Args } from "../cli"
-import { HttpProvider, HttpProviderOptions, HttpResponse, Route } from "../http"
+import { HttpProvider, HttpProviderOptions, HttpResponse, IAuthUser, Route } from "../http"
+import {AppSettings} from "../app"
 import { settings } from "../settings"
 import { pathToFsPath } from "../util"
 
@@ -25,7 +26,7 @@ export class VscodeHttpProvider extends HttpProvider {
   private readonly vsRootPath: string
   private _vscode?: Promise<cp.ChildProcess>
 
-  public constructor(options: HttpProviderOptions, private readonly args: Args) {
+  public constructor(options: HttpProviderOptions, private readonly appSettings:AppSettings, private readonly args: Args) {
     super(options)
     this.vsRootPath = path.resolve(this.rootPath, "lib/vscode")
     this.serverRootPath = path.join(this.vsRootPath, "out/vs/server")
@@ -97,6 +98,9 @@ export class VscodeHttpProvider extends HttpProvider {
     if (!this.authenticated(request)) {
       throw new Error("not authenticated")
     }
+    if (this.appSettings.disabled) {
+        throw new Error("Server disabled");
+    }
 
     // VS Code expects a raw socket. It will handle all the web socket frames.
     // We just need to handle the initial upgrade.
@@ -128,16 +132,19 @@ export class VscodeHttpProvider extends HttpProvider {
 
   public async handleRequest(route: Route, request: http.IncomingMessage): Promise<HttpResponse> {
     this.ensureMethod(request)
-
+    let userData: IAuthUser | boolean;
     switch (route.base) {
       case "/":
         if (!this.isRoot(route)) {
           throw new HttpError("Not found", HttpCode.NotFound)
-        } else if (!this.authenticated(request)) {
+        } else if (!(userData = this.authenticated(request))) {
           return { redirect: "/login", query: { to: route.providerBase } }
+        } else if(this.appSettings.disabled){
+            const message = "<div>VS Code is currently disabled. Try again later</div> ";
+            return this.getErrorRoot(route, "VS Code server is disabled", "500", message);
         }
         try {
-          return await this.getRoot(request, route)
+          return await this.getRoot(request, route, userData)
         } catch (error) {
           const message = `<div>VS Code failed to load.</div> ${
             this.isDev
@@ -168,7 +175,7 @@ export class VscodeHttpProvider extends HttpProvider {
     throw new HttpError("Not found", HttpCode.NotFound)
   }
 
-  private async getRoot(request: http.IncomingMessage, route: Route): Promise<HttpResponse> {
+  private async getRoot(request: http.IncomingMessage, route: Route, userData:IAuthUser | boolean): Promise<HttpResponse> {
     const remoteAuthority = request.headers.host as string
     const { lastVisited } = await settings.read()
     const startPath = await this.getFirstPath([
@@ -183,6 +190,7 @@ export class VscodeHttpProvider extends HttpProvider {
         args: this.args,
         remoteAuthority,
         startPath,
+        userData
       }),
     ])
 
@@ -195,14 +203,22 @@ export class VscodeHttpProvider extends HttpProvider {
       response.content = response.content.replace(/<!-- PROD_ONLY/g, "").replace(/END_PROD_ONLY -->/g, "")
     }
 
-    options.productConfiguration.codeServerVersion = require("../../../package.json").version
+    const user = (userData?(<IAuthUser>userData).user:'default')
 
+    options.productConfiguration.codeServerVersion = require("../../../package.json").version 
     response.content = response.content
       .replace(`"{{REMOTE_USER_DATA_URI}}"`, `'${JSON.stringify(options.remoteUserDataUri)}'`)
+      .replace(`"{{CURRENT_USER}}"`, `'${user}'`)
       .replace(`"{{PRODUCT_CONFIGURATION}}"`, `'${JSON.stringify(options.productConfiguration)}'`)
       .replace(`"{{WORKBENCH_WEB_CONFIGURATION}}"`, `'${JSON.stringify(options.workbenchWebConfiguration)}'`)
       .replace(`"{{NLS_CONFIGURATION}}"`, `'${JSON.stringify(options.nlsConfiguration)}'`)
-    return this.replaceTemplates<Options>(route, response, {
+      .replace("{{COLLAB_DISABLED}}", (this.appSettings.useCollaboration?'false':'true'))
+      .replace("{{FIREBASE_APIKEY}}", (this.appSettings["firebase-apiKey"]?this.appSettings["firebase-apiKey"]:'<API_KEY>'))
+      .replace("{{FIREBASE_AUTHDOMAIN}}", (this.appSettings["firebase-authDomain"]?this.appSettings["firebase-authDomain"]:'<AUTH_DOMAIN>'))
+      .replace("{{FIREBASE_DATABASEURL}}", (this.appSettings["firebase-databaseURL"]?this.appSettings["firebase-databaseURL"]:'<DATABASE_URL>'))
+      .replace("{{FIREBASE_REF}}", (this.appSettings["firebase-ref"]?this.appSettings["firebase-ref"]:''))
+      
+      return this.replaceTemplates<Options>(route, response, {
       disableTelemetry: !!this.args["disable-telemetry"],
     })
   }

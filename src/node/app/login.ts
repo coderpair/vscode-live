@@ -2,7 +2,7 @@ import * as http from "http"
 import * as limiter from "limiter"
 import * as querystring from "querystring"
 import { HttpCode, HttpError } from "../../common/http"
-import { AuthType, HttpProvider, HttpProviderOptions, HttpResponse, Route } from "../http"
+import { AuthType, HttpProvider, HttpProviderOptions, HttpResponse, IAuthUser, Route } from "../http"
 import { hash, humanPath } from "../util"
 
 interface LoginPayload {
@@ -69,8 +69,9 @@ export class LoginHttpProvider extends HttpProvider {
    */
   private async tryLogin(route: Route, request: http.IncomingMessage): Promise<HttpResponse> {
     // Already authenticated via cookies?
-    const providedPassword = this.authenticated(request)
-    if (providedPassword) {
+   
+    const userData = this.authenticated(request)
+    if (userData) {
       return { code: HttpCode.Ok }
     }
 
@@ -91,19 +92,19 @@ export class LoginHttpProvider extends HttpProvider {
    * Return a cookie if the user is authenticated otherwise throw an error.
    */
   private async login(payload: LoginPayload, route: Route, request: http.IncomingMessage): Promise<HttpResponse> {
-    const password = this.authenticated(request, {
+    const userData = this.authenticated(request, {
       key: typeof payload.password === "string" ? [hash(payload.password)] : undefined,
     })
 
-    if (password) {
+    if (userData) {
       return {
         redirect: (Array.isArray(route.query.to) ? route.query.to[0] : route.query.to) || "/",
         query: { to: undefined },
         cookie:
-          typeof password === "string"
+          userData
             ? {
                 key: "key",
-                value: password,
+                value: (<IAuthUser>userData).key,
                 path: payload.base,
               }
             : undefined,

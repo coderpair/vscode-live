@@ -25,9 +25,15 @@ export interface Args extends VsArgs {
   readonly config?: string
   readonly auth?: AuthType
   readonly password?: string
+  readonly admin?: string
+  readonly "firebase-apiKey"?: string
+  readonly "firebase-authDomain"?: string
+  readonly "firebase-databaseURL"?: string
+  readonly "firebase-ref"?: string
   readonly cert?: OptionalString
   readonly "cert-key"?: string
   readonly "disable-telemetry"?: boolean
+  readonly users?: any
   readonly help?: boolean
   readonly host?: string
   readonly json?: boolean
@@ -86,7 +92,7 @@ type OptionType<T> = T extends boolean
   ? "string"
   : T extends string[]
   ? "string[]"
-  : "unknown"
+  : "any"
 
 type Options<T> = {
   [P in keyof T]: Option<OptionType<T[P]>>
@@ -97,6 +103,30 @@ const options: Options<Required<Args>> = {
   password: {
     type: "string",
     description: "The password for password authentication (can only be passed in via $PASSWORD or the config file).",
+  },
+  admin: {
+    type: "string",
+    description: "Administrative password.",
+  },
+  users: {
+    type: "any",
+    description: "User accounts.",
+  },
+  "firebase-apiKey":{
+    type: "string",
+    description: "API Key from firebase",
+  },
+  "firebase-authDomain":{
+    type: "string",
+    description: "Firebase authDomain parameter.",
+  },
+  "firebase-databaseURL":{
+    type: "string",
+    description: "Firebase databaseURL parameter.",
+  },
+  "firebase-ref":{
+    type: "string",
+    description: "Firebase child ref.",
   },
   cert: {
     type: OptionalString,
@@ -254,7 +284,6 @@ export const parse = (
           key = pair[0] as keyof Args
         }
       }
-
       if (!key || !options[key]) {
         throw error(`Unknown option ${arg}`)
       }
@@ -320,7 +349,7 @@ export const parse = (
 
       continue
     }
-
+   
     // Everything else goes into _.
     args._.push(arg)
   }
@@ -388,6 +417,7 @@ async function defaultConfigFile(): Promise<string> {
   return `bind-addr: 127.0.0.1:8080
 auth: password
 password: ${await generatePassword()}
+admin: ${await generatePassword()}
 cert: false
 `
 }
@@ -404,7 +434,7 @@ export async function readConfigFile(configPath?: string): Promise<Args> {
       configPath = path.join(paths.config, "config.yaml")
     }
   }
-
+ 
   if (!(await fs.pathExists(configPath))) {
     await fs.outputFile(configPath, await defaultConfigFile())
     logger.info(`Wrote default config file to ${humanPath(configPath)}`)
@@ -417,19 +447,29 @@ export async function readConfigFile(configPath?: string): Promise<Args> {
   if (!config || typeof config === "string") {
     throw new Error(`invalid config: ${config}`)
   }
-
+ 
   // We convert the config file into a set of flags.
   // This is a temporary measure until we add a proper CLI library.
+  /*
   const configFileArgv = Object.entries(config).map(([optName, opt]) => {
     if (opt === true) {
       return `--${optName}`
     }
     return `--${optName}=${opt}`
   })
-  const args = parse(configFileArgv, {
-    configFile: configPath,
-  })
+  */
+  
+  const args: {[key: string]: any} = {};
+  for (let [key, value] of Object.entries(config)) {
+    if(value)args[key]=value
+  }
+  
+  //const args = parse(configFileArgv, {
+  //  configFile: configPath,
+  //})
+
   return {
+    _:[],
     ...args,
     config: configPath,
   }
@@ -507,6 +547,7 @@ export const shouldOpenInExistingInstance = async (args: Args): Promise<string |
   if (process.env.VSCODE_IPC_HOOK_CLI) {
     return process.env.VSCODE_IPC_HOOK_CLI
   }
+
 
   const readSocketPath = async (): Promise<string | undefined> => {
     try {
