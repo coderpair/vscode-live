@@ -38,12 +38,14 @@ export class LoginHttpProvider extends HttpProvider {
             return this.tryLogin(route, request)
           default:
             this.ensureMethod(request)
+            /*
             if (this.authenticated(request)) {
               return {
                 redirect: (Array.isArray(route.query.to) ? route.query.to[0] : route.query.to) || "/",
                 query: { to: undefined },
               }
             }
+            */
             return this.getRoot(route)
         }
     }
@@ -71,7 +73,7 @@ export class LoginHttpProvider extends HttpProvider {
     // Already authenticated via cookies?
    
     const userData = this.authenticated(request)
-    if (userData) {
+    if (userData && request.method != "POST") {
       return { code: HttpCode.Ok }
     }
 
