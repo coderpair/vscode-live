@@ -6,7 +6,8 @@ Set up multiple user accounts. Each user may have their own preferences/settings
 
 Collaborate with your team in real time.
 
-![Screenshot](./doc/assets/screenshot.png)
+![Screenshot](./doc/assets/screenshot2.png)
+*Use the group icon in the statusbar to open the user list.
 
 ## Getting Started
 
