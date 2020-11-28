@@ -17,11 +17,11 @@ Almost all the info that you need can be found on the [code-server](https://gith
 
 ## Installing
 
-Get the latest release here. Go to the code-server [installation](https://github.com/cdr/code-server/blob/v3.7.3/doc/install.md) page. Refer to the instructions for manual installation for your particular environment.
+Get the latest release [here](https://github.com/coderpair/vscode-live/releases). Go to the code-server [installation](https://github.com/cdr/code-server/blob/v3.7.3/doc/install.md) page. Refer to the instructions for manual installation for your particular environment.
 
 ## Setup
 
-Run code-server according to the instructions in the installation page above and visit the code-server page in your browser. If everything looks OK, you are ready to start setting up vscode-live.
+Run code-server according to the instructions in the installation page above and point your browser to the url of your code-server installation. If everything looks OK, you are ready to start setting up vscode-live.
 
 When `code-server` starts up, it creates a default config file in `~/.config/code-server/config.yaml` that looks
 like this:
@@ -57,7 +57,7 @@ firebase-ref: '-MCyz2LOkxQUSJBASlcG'
 
 Fill in the `<API_KEY>` and `<DATABASE_NAME>` with your Firebase settings. You can leave the `firebase-ref` field as is or change it if you feel like it! Restart code-server for the changes to go into effect.
 
-Skip to [Turn on real time collaboration](#turn-on-real-time-collaboration) if you don't want to set up multiple accounts.
+Skip to [Turning on real time collaboration](#turning-on-real-time-collaboration) if you don't want to set up multiple accounts.
 
 ## Setting up multiple accounts
 
@@ -84,7 +84,7 @@ users: {
 
 Restart code-server for the changes to go into effect.
 
-You can add as many accounts as you like. You will log in to code server with password you specify, so make sure it is a secure password.
+You can add as many accounts as you like. You will log in to code-server with password you specify, so make sure it is a secure password.
 
 Go to the login page in your browser
 
