@@ -17,7 +17,7 @@ Almost all the info that you need can be found on the [code-server](https://gith
 
 ## Installing
 
-Get the latest release [here](https://github.com/coderpair/vscode-live/releases). Go to the code-server [installation](https://github.com/cdr/code-server/blob/v3.7.3/doc/install.md) page. Refer to the instructions for manual installation for your particular environment.
+Get the latest release [here](https://github.com/coderpair/vscode-live/releases). Refer to [code-server's standalone instructions](https://github.com/cdr/code-server/blob/v3.7.3/doc/install.md#standalone-releases) for manual installation on your particular environment.
 
 ## Setup
 
@@ -77,7 +77,7 @@ firebase-databaseURL: 'https://<DATABASE_NAME>.firebaseio.com'
 firebase-ref: '-MCyz2LOkxQUSJBASlcG'
 users: {
   robert: {password: pswd1, role: admin},
-  sara: {password: pswd2, role: user}
+  sara: {password: pswd2, role: user},
   leonardo: {password: pswd3, role: user}
 }
 ```
