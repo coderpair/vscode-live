@@ -589,7 +589,7 @@ index 0ef8b9dc81419b53b27cf111fb206d72ba56bada..75d2ab3276049115829a38b8b7afee44
  	// If no workspace is provided through the URL, check for config attribute from server
  	if (!foundWorkspace) {
 diff --git a/src/vs/editor/browser/widget/codeEditorWidget.ts b/src/vs/editor/browser/widget/codeEditorWidget.ts
-index 17539558c91ca797df2445fd5b119f74a2f18cfe..66951f315af2efa206cefa7a9ccc82e13bd2c9c8 100644
+index 17539558c91ca797df2445fd5b119f74a2f18cfe..f390c4ca98a92b1ebc4459d7ed5e033a7e629363 100644
 --- a/src/vs/editor/browser/widget/codeEditorWidget.ts
 +++ b/src/vs/editor/browser/widget/codeEditorWidget.ts
 @@ -55,6 +55,8 @@ import { WordOperations } from 'vs/editor/common/controller/cursorWordOperations
@@ -601,370 +601,24 @@ index 17539558c91ca797df2445fd5b119f74a2f18cfe..66951f315af2efa206cefa7a9ccc82e1
  let EDITOR_ID = 0;
  
  export interface ICodeEditorWidgetOptions {
-@@ -77,23 +79,39 @@ export interface ICodeEditorWidgetOptions {
- 	telemetryData?: object;
- }
- 
--class ModelData {
-+class ModelData extends Disposable{
- 	public readonly model: ITextModel;
- 	public readonly viewModel: ViewModel;
- 	public readonly view: View;
- 	public readonly hasRealView: boolean;
- 	public readonly listenersToRemove: IDisposable[];
-+	public disposeOnContentChange: IDisposable;
-+	public disposeOnModelContentChange: IDisposable | null;
-+	private readonly _onDidChangeModelContent: Emitter<IModelContentChangedEvent> = this._register(new Emitter<IModelContentChangedEvent>());
-+	public readonly onDidChangeModelContent: Event<IModelContentChangedEvent> = this._onDidChangeModelContent.event;
-+
-+	constructor(model: ITextModel, viewModel: ViewModel, view: View, hasRealView: boolean, listenersToRemove: IDisposable[], disposeOnContentChange: IDisposable) {
-+		super();
- 
--	constructor(model: ITextModel, viewModel: ViewModel, view: View, hasRealView: boolean, listenersToRemove: IDisposable[]) {
- 		this.model = model;
- 		this.viewModel = viewModel;
- 		this.view = view;
- 		this.hasRealView = hasRealView;
- 		this.listenersToRemove = listenersToRemove;
-+		this.disposeOnContentChange = disposeOnContentChange;
-+		this.disposeOnModelContentChange = null
-+		
- 	}
- 
--	public dispose(): void {
-+	public setOnDidContentChange(mdl: ITextModel): void{
-+		this.disposeOnModelContentChange = mdl.onDidChangeContent((e) => this._onDidChangeModelContent.fire(e));
-+	}
-+
-+	public _dispose(): void {
- 		dispose(this.listenersToRemove);
-+		this.disposeOnContentChange.dispose();
-+		if(this.disposeOnModelContentChange)
-+			this.disposeOnModelContentChange.dispose()
- 		this.model.onBeforeDetached();
- 		if (this.hasRealView) {
- 			this.view.dispose();
-@@ -216,7 +234,7 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
- 	protected readonly _actions: { [key: string]: editorCommon.IEditorAction; };
- 
- 	// --- Members logically associated to a model
--	protected _modelData: ModelData | null;
-+	public _modelData: ModelData | null;
- 
- 	protected readonly _instantiationService: IInstantiationService;
- 	protected readonly _contextKeyService: IContextKeyService;
-@@ -1117,8 +1135,9 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
- 		return true;
- 	}
- 
--	public executeEdits(source: string | null | undefined, edits: IIdentifiedSingleEditOperation[], endCursorState?: ICursorStateComputer | Selection[]): boolean {
--		if (!this._modelData) {
-+	public executeEdits(source: string | null | undefined, edits: IIdentifiedSingleEditOperation[], endCursorState?: ICursorStateComputer | Selection[], modelData_? : ModelData): boolean {
-+		const md = modelData_ || this._modelData;
-+		if (!md) {
- 			return false;
- 		}
- 		if (this._configuration.options.get(EditorOption.readOnly)) {
-@@ -1135,7 +1154,7 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
- 			cursorStateComputer = endCursorState;
+@@ -1553,6 +1555,7 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
  		}
  
--		this._modelData.viewModel.executeEdits(source, edits, cursorStateComputer);
-+		md.viewModel.executeEdits(source, edits, cursorStateComputer);
- 		return true;
- 	}
- 
-@@ -1168,8 +1187,9 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
- 		return this._modelData.model.getLineDecorations(lineNumber, this._id, filterValidationDecorations(this._configuration.options));
- 	}
- 
--	public deltaDecorations(oldDecorations: string[], newDecorations: IModelDeltaDecoration[]): string[] {
--		if (!this._modelData) {
-+	public deltaDecorations(oldDecorations: string[], newDecorations: IModelDeltaDecoration[], modelData_? : ModelData): string[] {
-+		const md = modelData_ || this._modelData;
-+		if (!md) {
- 			return [];
- 		}
- 
-@@ -1177,7 +1197,7 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
- 			return oldDecorations;
- 		}
- 
--		return this._modelData.model.deltaDecorations(oldDecorations, newDecorations, this._id);
-+		return md.model.deltaDecorations(oldDecorations, newDecorations, this._id);
- 	}
- 
- 	public setDecorations(decorationTypeKey: string, decorationOptions: editorCommon.IDecorationOptions[]): void {
-@@ -1452,107 +1472,135 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
- 			return;
- 		}
- 
-+		let isReattach: boolean = false;
-+		if(!wb_monaco.disabled && wb_monaco.hasPreviousModelData(model,this._id)){
-+			isReattach = true
-+		}
-+		
- 		const listenersToRemove: IDisposable[] = [];
- 
- 		this._domElement.setAttribute('data-mode-id', model.getLanguageIdentifier().language);
--		this._configuration.setIsDominatedByLongLines(model.isDominatedByLongLines());
--		this._configuration.setMaxLineNumber(model.getLineCount());
--
--		model.onBeforeAttached();
--
--		const viewModel = new ViewModel(
--			this._id,
--			this._configuration,
--			model,
--			DOMLineBreaksComputerFactory.create(),
--			MonospaceLineBreaksComputerFactory.create(this._configuration.options),
--			(callback) => dom.scheduleAtNextAnimationFrame(callback)
--		);
--
--		listenersToRemove.push(model.onDidChangeDecorations((e) => this._onDidChangeModelDecorations.fire(e)));
--		listenersToRemove.push(model.onDidChangeLanguage((e) => {
--			this._domElement.setAttribute('data-mode-id', model.getLanguageIdentifier().language);
--			this._onDidChangeModelLanguage.fire(e);
--		}));
--		listenersToRemove.push(model.onDidChangeLanguageConfiguration((e) => this._onDidChangeModelLanguageConfiguration.fire(e)));
--		listenersToRemove.push(model.onDidChangeContent((e) => this._onDidChangeModelContent.fire(e)));
--		listenersToRemove.push(model.onDidChangeOptions((e) => this._onDidChangeModelOptions.fire(e)));
--		// Someone might destroy the model from under the editor, so prevent any exceptions by setting a null model
--		listenersToRemove.push(model.onWillDispose(() => this.setModel(null)));
--
--		listenersToRemove.push(viewModel.onEvent((e) => {
--			switch (e.kind) {
--				case OutgoingViewModelEventKind.ContentSizeChanged:
--					this._onDidContentSizeChange.fire(e);
--					break;
--				case OutgoingViewModelEventKind.FocusChanged:
--					this._editorTextFocus.setValue(e.hasFocus);
--					break;
--				case OutgoingViewModelEventKind.ScrollChanged:
--					this._onDidScrollChange.fire(e);
--					break;
--				case OutgoingViewModelEventKind.ViewZonesChanged:
--					this._onDidChangeViewZones.fire();
--					break;
--				case OutgoingViewModelEventKind.ReadOnlyEditAttempt:
--					this._onDidAttemptReadOnlyEdit.fire();
--					break;
--				case OutgoingViewModelEventKind.CursorStateChanged: {
--					if (e.reachedMaxCursorCount) {
--						this._notificationService.warn(nls.localize('cursors.maximum', "The number of cursors has been limited to {0}.", Cursor.MAX_CURSOR_COUNT));
--					}
--
--					const positions: Position[] = [];
--					for (let i = 0, len = e.selections.length; i < len; i++) {
--						positions[i] = e.selections[i].getPosition();
-+		
-+		if(!isReattach){
-+			
-+			this._configuration.setIsDominatedByLongLines(model.isDominatedByLongLines());
-+			this._configuration.setMaxLineNumber(model.getLineCount());
-+			model.onBeforeAttached();
-+			const viewModel = new ViewModel(
-+				this._id,
-+				this._configuration,
-+				model,
-+				DOMLineBreaksComputerFactory.create(),
-+				MonospaceLineBreaksComputerFactory.create(this._configuration.options),
-+				(callback) => dom.scheduleAtNextAnimationFrame(callback)
-+			);
-+			
-+			listenersToRemove.push(model.onDidChangeDecorations((e) => this._onDidChangeModelDecorations.fire(e)));
-+			listenersToRemove.push(model.onDidChangeLanguage((e) => {
-+				this._domElement.setAttribute('data-mode-id', model.getLanguageIdentifier().language);
-+				this._onDidChangeModelLanguage.fire(e);
-+			}));
-+			listenersToRemove.push(model.onDidChangeLanguageConfiguration((e) => this._onDidChangeModelLanguageConfiguration.fire(e)));
-+			const disposeContentChange = model.onDidChangeContent((e) => this._onDidChangeModelContent.fire(e));
-+			listenersToRemove.push(model.onDidChangeOptions((e) => this._onDidChangeModelOptions.fire(e)));
-+			// Someone might destroy the model from under the editor, so prevent any exceptions by setting a null model
-+			listenersToRemove.push(model.onWillDispose(() => this.setModel(null)));
-+
-+			listenersToRemove.push(viewModel.onEvent((e) => {
-+				switch (e.kind) {
-+					case OutgoingViewModelEventKind.ContentSizeChanged:
-+						this._onDidContentSizeChange.fire(e);
-+						break;
-+					case OutgoingViewModelEventKind.FocusChanged:
-+						this._editorTextFocus.setValue(e.hasFocus);
-+						break;
-+					case OutgoingViewModelEventKind.ScrollChanged:
-+						this._onDidScrollChange.fire(e);
-+						break;
-+					case OutgoingViewModelEventKind.ViewZonesChanged:
-+						this._onDidChangeViewZones.fire();
-+						break;
-+					case OutgoingViewModelEventKind.ReadOnlyEditAttempt:
-+						this._onDidAttemptReadOnlyEdit.fire();
-+						break;
-+					case OutgoingViewModelEventKind.CursorStateChanged: {
-+						if (e.reachedMaxCursorCount) {
-+							this._notificationService.warn(nls.localize('cursors.maximum', "The number of cursors has been limited to {0}.", Cursor.MAX_CURSOR_COUNT));
-+						}
-+
-+						const positions: Position[] = [];
-+						for (let i = 0, len = e.selections.length; i < len; i++) {
-+							positions[i] = e.selections[i].getPosition();
-+						}
-+
-+						const e1: ICursorPositionChangedEvent = {
-+							position: positions[0],
-+							secondaryPositions: positions.slice(1),
-+							reason: e.reason,
-+							source: e.source
-+						};
-+						this._onDidChangeCursorPosition.fire(e1);
-+
-+						const e2: ICursorSelectionChangedEvent = {
-+							selection: e.selections[0],
-+							secondarySelections: e.selections.slice(1),
-+							modelVersionId: e.modelVersionId,
-+							oldSelections: e.oldSelections,
-+							oldModelVersionId: e.oldModelVersionId,
-+							source: e.source,
-+							reason: e.reason
-+						};
-+						this._onDidChangeCursorSelection.fire(e2);
-+
-+						break;
- 					}
- 
--					const e1: ICursorPositionChangedEvent = {
--						position: positions[0],
--						secondaryPositions: positions.slice(1),
--						reason: e.reason,
--						source: e.source
--					};
--					this._onDidChangeCursorPosition.fire(e1);
--
--					const e2: ICursorSelectionChangedEvent = {
--						selection: e.selections[0],
--						secondarySelections: e.selections.slice(1),
--						modelVersionId: e.modelVersionId,
--						oldSelections: e.oldSelections,
--						oldModelVersionId: e.oldModelVersionId,
--						source: e.source,
--						reason: e.reason
--					};
--					this._onDidChangeCursorSelection.fire(e2);
--
--					break;
-+				}
-+			}));
-+			
-+			const [view, hasRealView] = this._createView(viewModel);
-+			if (hasRealView) {
-+				this._domElement.appendChild(view.domNode.domNode);
-+				let keys = Object.keys(this._contentWidgets);
-+				for (let i = 0, len = keys.length; i < len; i++) {
-+					const widgetId = keys[i];
-+					view.addContentWidget(this._contentWidgets[widgetId]);
- 				}
- 
-+				keys = Object.keys(this._overlayWidgets);
-+				for (let i = 0, len = keys.length; i < len; i++) {
-+					const widgetId = keys[i];
-+					view.addOverlayWidget(this._overlayWidgets[widgetId]);
-+				}
-+				view.render(false, true);
-+				view.domNode.domNode.setAttribute('data-uri', model.uri.toString());
- 			}
--		}));
- 
--		const [view, hasRealView] = this._createView(viewModel);
--		if (hasRealView) {
--			this._domElement.appendChild(view.domNode.domNode);
--
--			let keys = Object.keys(this._contentWidgets);
--			for (let i = 0, len = keys.length; i < len; i++) {
--				const widgetId = keys[i];
--				view.addContentWidget(this._contentWidgets[widgetId]);
--			}
-+			this._modelData = new ModelData(model, viewModel, view, hasRealView, listenersToRemove, disposeContentChange);
-+			this._modelData.setOnDidContentChange(model);
-+		}else{
-+		   this._modelData  = wb_monaco.getPreviousModelData(model,this._id);
-+			if(this._modelData){
-+				const [view, hasRealView] = [this._modelData.view,this._modelData.hasRealView];
-+				this._modelData.disposeOnContentChange = model.onDidChangeContent((e) => this._onDidChangeModelContent.fire(e));
-+				if (hasRealView) {
-+					wb_monaco.attachFirepad(this._modelData.model,this._id);
-+					let keys = Object.keys(this._contentWidgets);
-+					for (let i = 0, len = keys.length; i < len; i++) {
-+						const widgetId = keys[i];
-+						view.addContentWidget(this._contentWidgets[widgetId]);
-+					}
- 
--			keys = Object.keys(this._overlayWidgets);
--			for (let i = 0, len = keys.length; i < len; i++) {
--				const widgetId = keys[i];
--				view.addOverlayWidget(this._overlayWidgets[widgetId]);
-+					keys = Object.keys(this._overlayWidgets);
-+					for (let i = 0, len = keys.length; i < len; i++) {
-+						const widgetId = keys[i];
-+						view.addOverlayWidget(this._overlayWidgets[widgetId]);
-+					}
-+					view.render(false, true);
-+					view.domNode.domNode.setAttribute('data-uri', model.uri.toString());
-+				}
- 			}
--
--			view.render(false, true);
--			view.domNode.domNode.setAttribute('data-uri', model.uri.toString());
- 		}
--
--		this._modelData = new ModelData(model, viewModel, view, hasRealView, listenersToRemove);
+ 		this._modelData = new ModelData(model, viewModel, view, hasRealView, listenersToRemove);
++		wb_monaco.attachFirepad(model,this._id);
  	}
  
  	protected _createView(viewModel: ViewModel): [View, boolean] {
-@@ -1628,7 +1676,7 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
- 		return [view, true];
- 	}
- 
--	protected _postDetachModelCleanup(detachedModel: ITextModel | null): void {
-+	public _postDetachModelCleanup(detachedModel: ITextModel | null): void {
- 		if (detachedModel) {
- 			detachedModel.removeAllDecorationsWithOwnerId(this._id);
- 		}
-@@ -1639,17 +1687,25 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
- 			return null;
- 		}
+@@ -1641,6 +1644,7 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
  		const model = this._modelData.model;
--		const removeDomNode = this._modelData.hasRealView ? this._modelData.view.domNode.domNode : null;
-+		if(wb_monaco.disabled){
-+			const removeDomNode = this._modelData.hasRealView ? this._modelData.view.domNode.domNode : null;
+ 		const removeDomNode = this._modelData.hasRealView ? this._modelData.view.domNode.domNode : null;
  
--		this._modelData.dispose();
--		this._modelData = null;
-+			this._modelData._dispose();
-+			this._modelData = null;
++		wb_monaco.detachFirepad(model, this._id);
+ 		this._modelData.dispose();
+ 		this._modelData = null;
  
--		this._domElement.removeAttribute('data-mode-id');
--		if (removeDomNode && this._domElement.contains(removeDomNode)) {
--			this._domElement.removeChild(removeDomNode);
--		}
-+			this._domElement.removeAttribute('data-mode-id');
-+			if (removeDomNode && this._domElement.contains(removeDomNode)) {
-+				this._domElement.removeChild(removeDomNode);
-+			}
- 
--		return model;
-+			return model;
-+		}else{
-+			this._modelData.disposeOnContentChange.dispose();
-+			wb_monaco.detachFirepad(model, this._id);
-+			this._modelData = null;
-+			this._domElement.removeAttribute('data-mode-id');
-+			return null;
-+		}
- 	}
- 
- 	private _registerDecorationType(key: string, options: editorCommon.IDecorationRenderOptions, parentTypeKey?: string): void {
 diff --git a/src/vs/editor/common/services/modelServiceImpl.ts b/src/vs/editor/common/services/modelServiceImpl.ts
-index b21a32c25dc633d6259cedfa02bfb6679fa8a162..6282b6f45a630df7376bd802489c150ae5aa7ec0 100644
+index b21a32c25dc633d6259cedfa02bfb6679fa8a162..29fc6fca03f1127da6787adb6053d362a99a3b67 100644
 --- a/src/vs/editor/common/services/modelServiceImpl.ts
 +++ b/src/vs/editor/common/services/modelServiceImpl.ts
 @@ -30,6 +30,8 @@ import { EditStackElement, isEditStackElement } from 'vs/editor/common/model/edi
@@ -976,16 +630,17 @@ index b21a32c25dc633d6259cedfa02bfb6679fa8a162..6282b6f45a630df7376bd802489c150a
  export interface IEditorSemanticHighlightingOptions {
  	enabled: true | false | 'configuredByTheme';
  }
-@@ -505,6 +507,7 @@ export class ModelServiceImpl extends Disposable implements IModelService {
+@@ -505,6 +507,8 @@ export class ModelServiceImpl extends Disposable implements IModelService {
  			return;
  		}
  		const model = modelData.model;
 +		wb_monaco.destroyFirepad(model);
++		console.log("destroy model");
  		const sharesUndoRedoStack = (this._undoRedoService.getUriComparisonKey(model.uri) !== model.uri.toString());
  		let maintainUndoRedoStack = false;
  		let heapSize = 0;
 diff --git a/src/vs/editor/contrib/gotoSymbol/peek/referencesWidget.ts b/src/vs/editor/contrib/gotoSymbol/peek/referencesWidget.ts
-index 7c21c932e17b85cdae502b67628ff2d270b56360..654462e6083515562b20a1c82f41aab397acdc7e 100644
+index 7c21c932e17b85cdae502b67628ff2d270b56360..7b8bb7a294c9fd7d30006d5a22994dac8d62e832 100644
 --- a/src/vs/editor/contrib/gotoSymbol/peek/referencesWidget.ts
 +++ b/src/vs/editor/contrib/gotoSymbol/peek/referencesWidget.ts
 @@ -36,6 +36,7 @@ import { IUndoRedoService } from 'vs/platform/undoRedo/common/undoRedo';
@@ -1010,7 +665,7 @@ index 7c21c932e17b85cdae502b67628ff2d270b56360..654462e6083515562b20a1c82f41aab3
  			this._preview.revealRangeInCenter(sel, scrollType);
 -		} else {
 +			const mdl = this._preview.getModel();
-+			(change &&  mdl? wb_monaco.loadSet.add(mdl.uri.path + "peek" + mdl.id) && wb_monaco.connectEditorToFirepad(this._preview, mdl.uri, "peek" + mdl.id) : null)
++			(change &&  mdl? wb_monaco.connectEditorToFirepad(this._preview, mdl.uri, "peek" + mdl.id) : null)
 +        } else {
  			this._preview.setModel(this._previewNotAvailableMessage);
  			ref.dispose();
@@ -1124,36 +779,6 @@ index e7342348d46cbcafa1b301ca1373ce01c057e70f..408867d2d3b503b46363c5a853e047d3
 +		return results.reduce((flat, current) => flat.concat(current), []);
 +	}
  }
-diff --git a/src/vs/platform/files/common/fileService.ts b/src/vs/platform/files/common/fileService.ts
-index 2677be6e8fa6eb063b438b87a0e675b02f2a8fd0..b8dede46ed8bba270f53cab9d506bf26d70e64e5 100644
---- a/src/vs/platform/files/common/fileService.ts
-+++ b/src/vs/platform/files/common/fileService.ts
-@@ -21,6 +21,8 @@ import { Schemas } from 'vs/base/common/network';
- import { readFileIntoStream } from 'vs/platform/files/common/io';
- import { Iterable } from 'vs/base/common/iterator';
- 
-+declare var wb_monaco: any;
-+
- export class FileService extends Disposable implements IFileService {
- 
- 	declare readonly _serviceBrand: undefined;
-@@ -662,6 +664,7 @@ export class FileService extends Disposable implements IFileService {
- 
- 			// same provider: leverage rename() functionality
- 			if (sourceProvider === targetProvider) {
-+				wb_monaco.invalidate(source.path);
- 				await sourceProvider.rename(source, target, { overwrite });
- 
- 				return mode;
-@@ -670,7 +673,7 @@ export class FileService extends Disposable implements IFileService {
- 			// across providers: copy to target & delete at source
- 			else {
- 				await this.doMoveCopy(sourceProvider, source, targetProvider, target, 'copy', overwrite);
--
-+				wb_monaco.invalidate(source.path);
- 				await this.del(source, { recursive: true });
- 
- 				return 'copy';
 diff --git a/src/vs/platform/product/common/product.ts b/src/vs/platform/product/common/product.ts
 index 798faa74ae825de7449b74609ed649912531ec0f..487abd285a42407f669ce5f5396423644f822a83 100644
 --- a/src/vs/platform/product/common/product.ts
@@ -3432,7 +3057,7 @@ index 9e264fb33b9a282e3a5284bcd857e17a664107a7..a23a44a781cd1f9b7d432d79a46707c9
  import './mainThreadAuthentication';
  import './mainThreadTimeline';
 diff --git a/src/vs/workbench/api/browser/mainThreadDocumentsAndEditors.ts b/src/vs/workbench/api/browser/mainThreadDocumentsAndEditors.ts
-index c92a58c2709f73e29b3ae63d23e9d992a127f0d0..d46644d0a19dd761e0897b2143a7838dbd2a5006 100644
+index c92a58c2709f73e29b3ae63d23e9d992a127f0d0..a25642e20c7e7676a8db0ea744420ced4c3cea33 100644
 --- a/src/vs/workbench/api/browser/mainThreadDocumentsAndEditors.ts
 +++ b/src/vs/workbench/api/browser/mainThreadDocumentsAndEditors.ts
 @@ -32,6 +32,8 @@ import { IUriIdentityService } from 'vs/workbench/services/uriIdentity/common/ur
@@ -3452,7 +3077,7 @@ index c92a58c2709f73e29b3ae63d23e9d992a127f0d0..d46644d0a19dd761e0897b2143a7838d
  				}
  			}
  		}
-@@ -270,10 +273,14 @@ class MainThreadDocumentAndEditorStateComputer {
+@@ -270,11 +273,15 @@ class MainThreadDocumentAndEditorStateComputer {
  				for (const snapshot of editors.values()) {
  					if (candidate === snapshot.editor) {
  						activeEditor = snapshot.id;
@@ -3461,12 +3086,14 @@ index c92a58c2709f73e29b3ae63d23e9d992a127f0d0..d46644d0a19dd761e0897b2143a7838d
  				}
  			}
  		}
+-
 +		if(!activeEditor){
 +			wb_monaco.setActiveModel(null)
 +		}
- 
++		console.log('update state')
  		// compute new state and compare against old
  		const newState = new DocumentAndEditorState(models, editors, activeEditor);
+ 		const delta = DocumentAndEditorState.compute(this._currentState, newState);
 diff --git a/src/vs/workbench/api/browser/mainThreadStorage.ts b/src/vs/workbench/api/browser/mainThreadStorage.ts
 index 7bc3904963bed2925f3640b6bd929347159dd3cf..c6db2368ae9eaca61889efcf3c49763c01ff7459 100644
 --- a/src/vs/workbench/api/browser/mainThreadStorage.ts
@@ -3731,156 +3358,8 @@ index cc9d969be70ec3080439c1285599535e18eb1d2c..77142a38a7d605e35a9b1414fb12218e
  		if (typeof this.autoSaveAfterDelay !== 'number') {
  			return; // auto save after delay must be enabled
  		}
-diff --git a/src/vs/workbench/browser/parts/editor/editorGroupView.ts b/src/vs/workbench/browser/parts/editor/editorGroupView.ts
-index 012c84479cfc56310357d8354fde3288c5dece80..9e2e3cebc8414a869f243148f7321d48bf80397d 100644
---- a/src/vs/workbench/browser/parts/editor/editorGroupView.ts
-+++ b/src/vs/workbench/browser/parts/editor/editorGroupView.ts
-@@ -5,6 +5,7 @@
- 
- import 'vs/css!./media/editorgroupview';
- import { EditorGroup, IEditorOpenOptions, EditorCloseEvent, ISerializedEditorGroup, isSerializedEditorGroup } from 'vs/workbench/common/editor/editorGroup';
-+import { isCodeEditor, isDiffEditor } from 'vs/editor/browser/editorBrowser';
- import { EditorInput, EditorOptions, GroupIdentifier, SideBySideEditorInput, CloseDirection, IEditorCloseEvent, ActiveEditorDirtyContext, IEditorPane, EditorGroupEditorsCountContext, SaveReason, IEditorPartOptionsChangeEvent, EditorsOrder, IVisibleEditorPane, ActiveEditorStickyContext, ActiveEditorPinnedContext, Deprecated_EditorPinnedContext, Deprecated_EditorDirtyContext, EditorResourceAccessor } from 'vs/workbench/common/editor';
- import { Event, Emitter, Relay } from 'vs/base/common/event';
- import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-@@ -53,6 +54,8 @@ import { ILogService } from 'vs/platform/log/common/log';
- import { Codicon } from 'vs/base/common/codicons';
- import { IFilesConfigurationService, AutoSaveMode } from 'vs/workbench/services/filesConfiguration/common/filesConfigurationService';
- 
-+declare var wb_monaco: any;
-+
- export class EditorGroupView extends Themable implements IEditorGroupView {
- 
- 	//#region factory
-@@ -511,7 +514,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
- 	}
- 
- 	private onDidOpenEditor(editor: EditorInput): void {
--
-+		//if(!wb_monaco.flag3)return;
- 		/* __GDPR__
- 			"editorOpened" : {
- 				"${include}": [
-@@ -883,7 +886,6 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
- 	//#region openEditor()
- 
- 	async openEditor(editor: EditorInput, options?: EditorOptions, context?: OpenEditorContext): Promise<IEditorPane | null> {
--
- 		// Guard against invalid inputs
- 		if (!editor) {
- 			return null;
-@@ -990,7 +992,38 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
- 			openEditorPromise = (async () => {
- 				try {
- 					const result = await this.editorControl.openEditor(editor, options, { newInGroup: context.isNew });
--
-+					
-+					wb_monaco.currentGroup = this._group.id;
-+					const control = result.editorPane.getControl();
-+
-+					if(isDiffEditor(control)){
-+						let origEditor = control.getOriginalEditor();
-+						let modEditor = control.getModifiedEditor();
-+						let modelL = origEditor.getModel();
-+						let modelR = modEditor.getModel();
-+						if(modelL && modelR){
-+							wb_monaco.loadSet.add(modelL.uri.path + wb_monaco.currentGroup + 'L');
-+							wb_monaco.loadSet.add(modelR.uri.path + wb_monaco.currentGroup + 'R');
-+						}
-+					} else if(isCodeEditor(control) && editor.resource){
-+						wb_monaco.loadSet.add(editor.resource.path + wb_monaco.currentGroup);
-+					}
-+													
-+					if (!(this.accessor.activeGroup === this)) {
-+						
-+						if(isDiffEditor(control)){
-+							let origEditor = control.getOriginalEditor();
-+							let modEditor = control.getModifiedEditor();
-+							let modelL = origEditor.getModel();
-+							let modelR = modEditor.getModel();
-+							if(modelL && modelR){
-+								wb_monaco.connectEditorToFirepad(origEditor, modelL.uri, wb_monaco.currentGroup + 'L') || wb_monaco.connectEditorToFirepad(modEditor, modelR.uri, wb_monaco.currentGroup + 'R')
-+							}
-+						}else if(isCodeEditor(control)){
-+							wb_monaco.connectEditorToFirepad(control, editor.resource, wb_monaco.currentGroup)
-+						}
-+					}
-+					
- 					// Editor change event
- 					if (result.editorChanged) {
- 						this._onDidGroupChange.fire({ kind: GroupChangeKind.EDITOR_ACTIVE, editor });
-diff --git a/src/vs/workbench/browser/parts/editor/editorStatus.ts b/src/vs/workbench/browser/parts/editor/editorStatus.ts
-index 4a44e0eacea713a2168878600c5acc938a3699b2..5c3a9dba75118bfe61063d1860385544d19efe01 100644
---- a/src/vs/workbench/browser/parts/editor/editorStatus.ts
-+++ b/src/vs/workbench/browser/parts/editor/editorStatus.ts
-@@ -38,7 +38,7 @@ import { ConfigurationChangedEvent, IEditorOptions, EditorOption } from 'vs/edit
- import { ITextResourceConfigurationService } from 'vs/editor/common/services/textResourceConfigurationService';
- import { ConfigurationTarget, IConfigurationService } from 'vs/platform/configuration/common/configuration';
- import { deepClone } from 'vs/base/common/objects';
--import { ICodeEditor, getCodeEditor } from 'vs/editor/browser/editorBrowser';
-+import { ICodeEditor, getCodeEditor, isCodeEditor, isDiffEditor } from 'vs/editor/browser/editorBrowser';
- import { Schemas } from 'vs/base/common/network';
- import { IPreferencesService } from 'vs/workbench/services/preferences/common/preferences';
- import { IQuickInputService, IQuickPickItem, QuickPickInput } from 'vs/platform/quickinput/common/quickInput';
-@@ -53,6 +53,8 @@ import { IMarker, IMarkerService, MarkerSeverity, IMarkerData } from 'vs/platfor
- import { STATUS_BAR_PROMINENT_ITEM_BACKGROUND, STATUS_BAR_PROMINENT_ITEM_FOREGROUND } from 'vs/workbench/common/theme';
- import { themeColorFromId } from 'vs/platform/theme/common/themeService';
- 
-+declare var wb_monaco: any;
-+
- class SideBySideEditorEncodingSupport implements IEncodingSupport {
- 	constructor(private primary: IEncodingSupport, private secondary: IEncodingSupport) { }
- 
-@@ -630,7 +632,24 @@ export class EditorStatus extends Disposable implements IWorkbenchContribution {
- 
- 		// Dispose old active editor listeners
- 		this.activeEditorListeners.clear();
--
-+		
-+		if(activeEditorPane){
-+			wb_monaco.setRange(Range);
-+			const control = activeEditorPane.getControl();
-+
-+			if(isDiffEditor(control)){
-+				let origEditor = control.getOriginalEditor();
-+				let modEditor = control.getModifiedEditor();
-+				let modelL = origEditor.getModel();
-+				let modelR = modEditor.getModel();
-+				if(modelL && modelR){
-+					wb_monaco.connectEditorToFirepad(origEditor, modelL.uri, activeEditorPane.group.id + 'L', {diff_original: true}) || wb_monaco.connectEditorToFirepad(modEditor, modelR.uri, activeEditorPane.group.id + 'R')
-+				}
-+			}else if(isCodeEditor(control) && activeInput){
-+				wb_monaco.connectEditorToFirepad(control,activeInput.resource, activeEditorPane.group.id)
-+			}
-+		}
-+		
- 		// Attach new listeners to active editor
- 		if (activeCodeEditor) {
- 
-diff --git a/src/vs/workbench/browser/parts/editor/textEditor.ts b/src/vs/workbench/browser/parts/editor/textEditor.ts
-index f2a77542ef9609c4ed4f5d318a980b9dae39c35e..35e2e1801573c68fa902e8868d086cb299c12e60 100644
---- a/src/vs/workbench/browser/parts/editor/textEditor.ts
-+++ b/src/vs/workbench/browser/parts/editor/textEditor.ts
-@@ -27,6 +27,8 @@ import { IExtUri } from 'vs/base/common/resources';
- import { MutableDisposable } from 'vs/base/common/lifecycle';
- import { IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
- 
-+declare var wb_monaco: any;
-+
- export interface IEditorConfiguration {
- 	editor: object;
- 	diffEditor: object;
-@@ -68,7 +70,7 @@ export abstract class BaseTextEditor extends EditorPane implements ITextEditorPa
- 	) {
- 		super(id, telemetryService, themeService, storageService);
- 		this._instantiationService = instantiationService;
--
-+        wb_monaco.editorControl = this;
- 		this.editorMemento = this.getEditorMemento<IEditorViewState>(editorGroupService, BaseTextEditor.TEXT_EDITOR_VIEW_STATE_PREFERENCE_KEY, 100);
- 
- 		this._register(this.textResourceConfigurationService.onDidChangeConfiguration(() => {
 diff --git a/src/vs/workbench/browser/web.main.ts b/src/vs/workbench/browser/web.main.ts
-index 416938f141228faafc95dc765be7d5fbaf610a7e..49a82b3ee81e5632483a9ef7b2f5bbc4f1eb9f81 100644
+index 416938f141228faafc95dc765be7d5fbaf610a7e..6924d3b94de269b417cdfa83f0ef16ee319db3e0 100644
 --- a/src/vs/workbench/browser/web.main.ts
 +++ b/src/vs/workbench/browser/web.main.ts
 @@ -42,6 +42,7 @@ import { FileLogService } from 'vs/platform/log/common/fileLogService';
@@ -3900,24 +3379,19 @@ index 416938f141228faafc95dc765be7d5fbaf610a7e..49a82b3ee81e5632483a9ef7b2f5bbc4
  class BrowserMain extends Disposable {
  
  	constructor(
-@@ -83,6 +86,8 @@ class BrowserMain extends Disposable {
- 			services.logService
- 		);
- 
-+		wb_monaco.serviceCollection = services.serviceCollection;
-+
- 		// Listeners
- 		this.registerListeners(workbench, services.storageService);
- 
-@@ -94,6 +99,11 @@ class BrowserMain extends Disposable {
+@@ -94,6 +97,15 @@ class BrowserMain extends Disposable {
  		// Startup
  		const instantiationService = workbench.startup();
  
 +		await initialize(services.serviceCollection);
++
++		// CoderPair Plugin initialization
++		wb_monaco.serviceCollection = services.serviceCollection;
 +		if(!wb_monaco.disabled){
 +			wb_monaco.initializeCoderpair();
 +			wb_monaco.coderpair.updateStatusbarEntry()
 +		}
++
  		// Return API Facade
  		return instantiationService.invokeFunction(accessor => {
  			const commandService = accessor.get(ICommandService);
@@ -3945,16 +3419,17 @@ index 94e7e7a4bac154c45078a1b5034e50634a7a43af..8164200dcef1efbc65b50eef9c270af3
  				this._pathKey.set(value ? value.fsPath : null);
 diff --git a/src/vs/workbench/contrib/coderpair/browser/coderpair.contribution.ts b/src/vs/workbench/contrib/coderpair/browser/coderpair.contribution.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..4541544e60512151cc2878e818c9aa4a8e5139fd
+index 0000000000000000000000000000000000000000..54eb67243b5efb66b99f4891af6e41501885aca5
 --- /dev/null
 +++ b/src/vs/workbench/contrib/coderpair/browser/coderpair.contribution.ts
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,363 @@
 +import { URI } from 'vs/base/common/uri';
 +import { CommandsRegistry } from 'vs/platform/commands/common/commands';
 +import {Range} from 'vs/editor/common/core/range';
 +import { ICodeEditor, isCodeEditor, isDiffEditor } from 'vs/editor/browser/editorBrowser';
 +import { InstantiationService } from 'vs/platform/instantiation/common/instantiationService';
 +import { IEditorService, ACTIVE_GROUP } from 'vs/workbench/services/editor/common/editorService';
++import { IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
 +import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
 +import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from 'vs/workbench/services/statusbar/common/statusbar';
 +import { localize } from 'vs/nls';
@@ -3963,6 +3438,13 @@ index 0000000000000000000000000000000000000000..4541544e60512151cc2878e818c9aa4a
 +import { Gesture } from 'vs/base/browser/touch';
 +import { Disposable } from 'vs/base/common/lifecycle';
 +import { addDisposableListener, EventType, hasClass } from 'vs/base/browser/dom';
++import { IBulkEditService} from 'vs/editor/browser/services/bulkEditService';
++import { IIdentifiedSingleEditOperation, ITextModel } from 'vs/editor/common/model';
++import { mergeSort } from 'vs/base/common/arrays';
++import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
++import { FileOperation, IFileService } from 'vs/platform/files/common/files';
++import { Registry } from 'vs/platform/registry/common/platform';
++import { IConfigurationRegistry, Extensions} from 'vs/platform/configuration/common/configurationRegistry';
 +
 +declare var wb_monaco: any;
 +
@@ -3979,10 +3461,79 @@ index 0000000000000000000000000000000000000000..4541544e60512151cc2878e818c9aa4a
 +
 +	constructor(
 +		@IWorkbenchEnvironmentService private environmentService: IWorkbenchEnvironmentService,
++		@IConfigurationService private readonly configurationService: IConfigurationService,
++
 +		@IEditorService private readonly editorService: IEditorService,
++		@IEditorGroupsService private readonly editorGroupService: IEditorGroupsService,
++		@IFileService private readonly fileService: IFileService,
++
++		@IBulkEditService private readonly _bulkEditService: IBulkEditService,
 +		@IStatusbarService private readonly statusbarService: IStatusbarService
 +	) {
 +		super()
++
++		// Listener to connect Firepad
++
++		this.editorService.onDidVisibleEditorsChange(()=>{
++			const activeGroup = this.editorGroupService.activeGroup;
++			if(activeGroup){
++				wb_monaco.setRange(Range);
++				wb_monaco.currentGroup = this.editorGroupService.activeGroup.id;
++				const control = this.editorService.activeTextEditorControl;
++						
++				if(isDiffEditor(control)){
++					let origEditor = control.getOriginalEditor();
++					let modEditor = control.getModifiedEditor();
++					let modelL = origEditor.getModel();
++					let modelR = modEditor.getModel();
++					if(modelL && modelR){
++						wb_monaco.connectEditorToFirepad(origEditor, modelL.uri, wb_monaco.currentGroup + 'L') || wb_monaco.connectEditorToFirepad(modEditor, modelR.uri, wb_monaco.currentGroup + 'R')
++					}
++				}else if(isCodeEditor(control)){
++					const model = control.getModel();
++					if(model){
++						wb_monaco.connectEditorToFirepad(control, model.uri, wb_monaco.currentGroup)
++					}
++				}
++			}
++		})
++
++		/*
++		this.editorService.onDidActiveEditorChange(()=>{
++		})
++		*/
++
++		// For Firebase invalidation
++
++		this.fileService.onDidRunOperation(event => {
++				switch (event.operation) {
++					case FileOperation.CREATE:
++						break;
++					case FileOperation.DELETE:
++						wb_monaco.invalidate(event.resource.path)
++						break;
++					case FileOperation.MOVE:
++						wb_monaco.invalidate(event.resource.path)
++						break;
++					case FileOperation.COPY:
++						break;	
++				}
++		})
++		
++		// Get rid of autosave
++
++		const configurations = Registry.as<IConfigurationRegistry>(Extensions.Configuration)
++		const configs = configurations.getConfigurations().slice();
++
++		configs.forEach(config => {
++			if(config.id == 'files'){
++				const props = config.properties;
++				if(props){
++					delete props['files.autoSave'];
++					delete props['files.autoSaveDelay'];
++				}
++			}
++		});
 +	}
 +
 +	get name(): string | undefined{
@@ -3994,6 +3545,63 @@ index 0000000000000000000000000000000000000000..4541544e60512151cc2878e818c9aa4a
 +		let resource: URI = uri.with({scheme:"vscode-remote", authority:'localhost:8080', path:"/Users/robertbeach/projects/code-server/cpr/theme.js", query:"", fragment:""}) 
 +		return resource;
 +	}
++
++	// Apply Edits
++
++	private apply(edits:IIdentifiedSingleEditOperation[], model:ITextModel): void {
++		if (edits.length > 0) {
++			edits = mergeSort(edits, (a, b) => Range.compareRangesUsingStarts(a.range, b.range));
++			model.pushEditOperations(null, edits, () => null);
++		}
++		/*
++		if (this._newEol !== undefined) {
++			this.model.pushEOL(this._newEol);
++		}
++		*/
++	}
++	
++	
++	private apply2(edits:IIdentifiedSingleEditOperation[],editor:ICodeEditor): void {
++		if (edits.length > 0) {
++			edits = mergeSort(edits, (a, b) => Range.compareRangesUsingStarts(a.range, b.range));
++			editor.executeEdits('', edits);
++		}
++		/*
++		if (this._newEol !== undefined) {
++			if (editor.hasModel()) {
++				editor.getModel().pushEOL(this._newEol);
++			}
++		}
++		*/
++	}
++	
++    public executeEdits(edits:IIdentifiedSingleEditOperation[],editor:ICodeEditor,model:ITextModel):void{
++		if (editor?.getModel()?.uri.toString() === model.uri.toString()) {
++			this.apply2(edits, editor);
++		} else {
++			this.apply(edits, model);
++		}
++	}
++
++	/*
++	private getResourceEdit(edit: any): ResourceEdit[] {
++		const result: ResourceEdit[] = [];
++		result.push(new ResourceTextEdit(edit.resource, edit.edit, edit.modelVersionId, edit.metadata));	
++		return result;
++	}
++	
++	public async executeEdit(edit: any, options: IComputedEditorOptions): Promise<IBulkEditResult | boolean>{
++		//const editTask = new ModelEditTask()
++		if (options.get(EditorOption.readOnly)) {
++			// read only editor => sorry!
++			return Promise.resolve(false);
++		}
++		const edits = this.getResourceEdit(edit);
++		return this._bulkEditService.apply(edits);
++	}
++	*/
++
++	// Focus in on user location
 +
 +	public async openURI(path:string, cursor:any):Promise<void> {
 +		let uri: URI = URI.parse("");
@@ -4020,6 +3628,8 @@ index 0000000000000000000000000000000000000000..4541544e60512151cc2878e818c9aa4a
 +			}
 +		}
 +	}
++
++	// User dialog box
 +
 +    public showDialog():void{
 +		this.dialogIsVisible=true
@@ -4217,7 +3827,7 @@ index 086fa8c123a0487eb71c085de89983393579a8b1..e4252efbce8c37afc19b30a1b7209d5b
  MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
  	group: '6_close',
 diff --git a/src/vs/workbench/contrib/files/browser/files.contribution.ts b/src/vs/workbench/contrib/files/browser/files.contribution.ts
-index d2e8299e07acc9d1843d664bed23137705756b8d..bd33b9f9fb67ca4db03ef7973742c65f5ed2a9ae 100644
+index d2e8299e07acc9d1843d664bed23137705756b8d..33af66668aabc63cf41b11b0b9d977feddf7531d 100644
 --- a/src/vs/workbench/contrib/files/browser/files.contribution.ts
 +++ b/src/vs/workbench/contrib/files/browser/files.contribution.ts
 @@ -41,6 +41,8 @@ import { editorConfigurationBaseNode } from 'vs/editor/common/config/commonEdito
@@ -4229,447 +3839,15 @@ index d2e8299e07acc9d1843d664bed23137705756b8d..bd33b9f9fb67ca4db03ef7973742c65f
  // Viewlet Action
  export class OpenExplorerViewletAction extends ShowViewletAction {
  	static readonly ID = VIEWLET_ID;
-@@ -204,157 +206,294 @@ const hotExitConfiguration: IConfigurationPropertySchema = platform.isNative ?
- 		'description': nls.localize('hotExit', "Controls whether unsaved files are remembered between sessions, allowing the save prompt when exiting the editor to be skipped.", HotExitConfiguration.ON_EXIT, HotExitConfiguration.ON_EXIT_AND_WINDOW_CLOSE)
- 	};
- 
--configurationRegistry.registerConfiguration({
--	'id': 'files',
--	'order': 9,
--	'title': nls.localize('filesConfigurationTitle', "Files"),
--	'type': 'object',
--	'properties': {
--		[FILES_EXCLUDE_CONFIG]: {
--			'type': 'object',
--			'markdownDescription': nls.localize('exclude', "Configure glob patterns for excluding files and folders. For example, the file Explorer decides which files and folders to show or hide based on this setting. Refer to the `#search.exclude#` setting to define search specific excludes. Read more about glob patterns [here](https://code.visualstudio.com/docs/editor/codebasics#_advanced-search-options)."),
--			'default': { '**/.git': true, '**/.svn': true, '**/.hg': true, '**/CVS': true, '**/.DS_Store': true },
--			'scope': ConfigurationScope.RESOURCE,
--			'additionalProperties': {
--				'anyOf': [
--					{
--						'type': 'boolean',
--						'description': nls.localize('files.exclude.boolean', "The glob pattern to match file paths against. Set to true or false to enable or disable the pattern."),
--					},
--					{
--						'type': 'object',
--						'properties': {
--							'when': {
--								'type': 'string', // expression ({ "**/*.js": { "when": "$(basename).js" } })
--								'pattern': '\\w*\\$\\(basename\\)\\w*',
--								'default': '$(basename).ext',
--								'description': nls.localize('files.exclude.when', "Additional check on the siblings of a matching file. Use $(basename) as variable for the matching file name.")
-+if(!wb_monaco.disabled){
-+	configurationRegistry.registerConfiguration({
-+		'id': 'files',
-+		'order': 9,
-+		'title': nls.localize('filesConfigurationTitle', "Files"),
-+		'type': 'object',
-+		'properties': {
-+			[FILES_EXCLUDE_CONFIG]: {
-+				'type': 'object',
-+				'markdownDescription': nls.localize('exclude', "Configure glob patterns for excluding files and folders. For example, the file Explorer decides which files and folders to show or hide based on this setting. Refer to the `#search.exclude#` setting to define search specific excludes. Read more about glob patterns [here](https://code.visualstudio.com/docs/editor/codebasics#_advanced-search-options)."),
-+				'default': { '**/.git': true, '**/.svn': true, '**/.hg': true, '**/CVS': true, '**/.DS_Store': true },
-+				'scope': ConfigurationScope.RESOURCE,
-+				'additionalProperties': {
-+					'anyOf': [
-+						{
-+							'type': 'boolean',
-+							'description': nls.localize('files.exclude.boolean', "The glob pattern to match file paths against. Set to true or false to enable or disable the pattern."),
-+						},
-+						{
-+							'type': 'object',
-+							'properties': {
-+								'when': {
-+									'type': 'string', // expression ({ "**/*.js": { "when": "$(basename).js" } })
-+									'pattern': '\\w*\\$\\(basename\\)\\w*',
-+									'default': '$(basename).ext',
-+									'description': nls.localize('files.exclude.when', "Additional check on the siblings of a matching file. Use $(basename) as variable for the matching file name.")
-+								}
- 							}
- 						}
--					}
--				]
-+					]
-+				}
-+			},
-+			[FILES_ASSOCIATIONS_CONFIG]: {
-+				'type': 'object',
-+				'markdownDescription': nls.localize('associations', "Configure file associations to languages (e.g. `\"*.extension\": \"html\"`). These have precedence over the default associations of the languages installed."),
-+				'additionalProperties': {
-+					'type': 'string'
-+				}
-+			},
-+			'files.encoding': {
-+				'type': 'string',
-+				'enum': Object.keys(SUPPORTED_ENCODINGS),
-+				'default': 'utf8',
-+				'description': nls.localize('encoding', "The default character set encoding to use when reading and writing files. This setting can also be configured per language."),
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE,
-+				'enumDescriptions': Object.keys(SUPPORTED_ENCODINGS).map(key => SUPPORTED_ENCODINGS[key].labelLong)
-+			},
-+			'files.autoGuessEncoding': {
-+				'type': 'boolean',
-+				'default': false,
-+				'description': nls.localize('autoGuessEncoding', "When enabled, the editor will attempt to guess the character set encoding when opening files. This setting can also be configured per language."),
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
-+			},
-+			'files.eol': {
-+				'type': 'string',
-+				'enum': [
-+					'\n',
-+					'\r\n',
-+					'auto'
-+				],
-+				'enumDescriptions': [
-+					nls.localize('eol.LF', "LF"),
-+					nls.localize('eol.CRLF', "CRLF"),
-+					nls.localize('eol.auto', "Uses operating system specific end of line character.")
-+				],
-+				'default': 'auto',
-+				'description': nls.localize('eol', "The default end of line character."),
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
-+			},
-+			'files.enableTrash': {
-+				'type': 'boolean',
-+				'default': true,
-+				'description': nls.localize('useTrash', "Moves files/folders to the OS trash (recycle bin on Windows) when deleting. Disabling this will delete files/folders permanently.")
-+			},
-+			'files.trimTrailingWhitespace': {
-+				'type': 'boolean',
-+				'default': false,
-+				'description': nls.localize('trimTrailingWhitespace', "When enabled, will trim trailing whitespace when saving a file."),
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
-+			},
-+			'files.insertFinalNewline': {
-+				'type': 'boolean',
-+				'default': false,
-+				'description': nls.localize('insertFinalNewline', "When enabled, insert a final new line at the end of the file when saving it."),
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
-+			},
-+			'files.trimFinalNewlines': {
-+				'type': 'boolean',
-+				'default': false,
-+				'description': nls.localize('trimFinalNewlines', "When enabled, will trim all new lines after the final new line at the end of the file when saving it."),
-+				scope: ConfigurationScope.LANGUAGE_OVERRIDABLE,
-+			},
-+			'files.watcherExclude': {
-+				'type': 'object',
-+				'default': platform.isWindows /* https://github.com/microsoft/vscode/issues/23954 */ ? { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/*/**': true, '**/.hg/store/**': true } : { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/**': true, '**/.hg/store/**': true },
-+				'description': nls.localize('watcherExclude', "Configure glob patterns of file paths to exclude from file watching. Patterns must match on absolute paths (i.e. prefix with ** or the full path to match properly). Changing this setting requires a restart. When you experience Code consuming lots of CPU time on startup, you can exclude large folders to reduce the initial load."),
-+				'scope': ConfigurationScope.RESOURCE
-+			},
-+			'files.hotExit': hotExitConfiguration,
-+			'files.defaultLanguage': {
-+				'type': 'string',
-+				'markdownDescription': nls.localize('defaultLanguage', "The default language mode that is assigned to new files. If configured to `${activeEditorLanguage}`, will use the language mode of the currently active text editor if any.")
-+			},
-+			'files.maxMemoryForLargeFilesMB': {
-+				'type': 'number',
-+				'default': 4096,
-+				'markdownDescription': nls.localize('maxMemoryForLargeFilesMB', "Controls the memory available to VS Code after restart when trying to open large files. Same effect as specifying `--max-memory=NEWSIZE` on the command line."),
-+				included: platform.isNative
-+			},
-+			'files.restoreUndoStack': {
-+				'type': 'boolean',
-+				'description': nls.localize('files.restoreUndoStack', "Restore the undo stack when a file is reopened."),
-+				'default': true
-+			},
-+			'files.saveConflictResolution': {
-+				'type': 'string',
-+				'enum': [
-+					'askUser',
-+					'overwriteFileOnDisk'
-+				],
-+				'enumDescriptions': [
-+					nls.localize('askUser', "Will refuse to save and ask for resolving the save conflict manually."),
-+					nls.localize('overwriteFileOnDisk', "Will resolve the save conflict by overwriting the file on disk with the changes in the editor.")
-+				],
-+				'description': nls.localize('files.saveConflictResolution', "A save conflict can occur when a file is saved to disk that was changed by another program in the meantime. To prevent data loss, the user is asked to compare the changes in the editor with the version on disk. This setting should only be changed if you frequently encounter save conflict errors and may result in data loss if used without caution."),
-+				'default': 'askUser',
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
-+			},
-+			'files.simpleDialog.enable': {
-+				'type': 'boolean',
-+				'description': nls.localize('files.simpleDialog.enable', "Enables the simple file dialog. The simple file dialog replaces the system file dialog when enabled."),
-+				'default': false
- 			}
--		},
--		[FILES_ASSOCIATIONS_CONFIG]: {
--			'type': 'object',
--			'markdownDescription': nls.localize('associations', "Configure file associations to languages (e.g. `\"*.extension\": \"html\"`). These have precedence over the default associations of the languages installed."),
--			'additionalProperties': {
--				'type': 'string'
-+		}
-+	})
-+}else{
-+	configurationRegistry.registerConfiguration({
-+		'id': 'files',
-+		'order': 9,
-+		'title': nls.localize('filesConfigurationTitle', "Files"),
-+		'type': 'object',
-+		'properties': {
-+			[FILES_EXCLUDE_CONFIG]: {
-+				'type': 'object',
-+				'markdownDescription': nls.localize('exclude', "Configure glob patterns for excluding files and folders. For example, the file Explorer decides which files and folders to show or hide based on this setting. Refer to the `#search.exclude#` setting to define search specific excludes. Read more about glob patterns [here](https://code.visualstudio.com/docs/editor/codebasics#_advanced-search-options)."),
-+				'default': { '**/.git': true, '**/.svn': true, '**/.hg': true, '**/CVS': true, '**/.DS_Store': true },
-+				'scope': ConfigurationScope.RESOURCE,
-+				'additionalProperties': {
-+					'anyOf': [
-+						{
-+							'type': 'boolean',
-+							'description': nls.localize('files.exclude.boolean', "The glob pattern to match file paths against. Set to true or false to enable or disable the pattern."),
-+						},
-+						{
-+							'type': 'object',
-+							'properties': {
-+								'when': {
-+									'type': 'string', // expression ({ "**/*.js": { "when": "$(basename).js" } })
-+									'pattern': '\\w*\\$\\(basename\\)\\w*',
-+									'default': '$(basename).ext',
-+									'description': nls.localize('files.exclude.when', "Additional check on the siblings of a matching file. Use $(basename) as variable for the matching file name.")
-+								}
-+							}
-+						}
-+					]
-+				}
-+			},
-+			[FILES_ASSOCIATIONS_CONFIG]: {
-+				'type': 'object',
-+				'markdownDescription': nls.localize('associations', "Configure file associations to languages (e.g. `\"*.extension\": \"html\"`). These have precedence over the default associations of the languages installed."),
-+				'additionalProperties': {
-+					'type': 'string'
-+				}
-+			},
-+			'files.encoding': {
-+				'type': 'string',
-+				'enum': Object.keys(SUPPORTED_ENCODINGS),
-+				'default': 'utf8',
-+				'description': nls.localize('encoding', "The default character set encoding to use when reading and writing files. This setting can also be configured per language."),
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE,
-+				'enumDescriptions': Object.keys(SUPPORTED_ENCODINGS).map(key => SUPPORTED_ENCODINGS[key].labelLong)
-+			},
-+			'files.autoGuessEncoding': {
-+				'type': 'boolean',
-+				'default': false,
-+				'description': nls.localize('autoGuessEncoding', "When enabled, the editor will attempt to guess the character set encoding when opening files. This setting can also be configured per language."),
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
-+			},
-+			'files.eol': {
-+				'type': 'string',
-+				'enum': [
-+					'\n',
-+					'\r\n',
-+					'auto'
-+				],
-+				'enumDescriptions': [
-+					nls.localize('eol.LF', "LF"),
-+					nls.localize('eol.CRLF', "CRLF"),
-+					nls.localize('eol.auto', "Uses operating system specific end of line character.")
-+				],
-+				'default': 'auto',
-+				'description': nls.localize('eol', "The default end of line character."),
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
-+			},
-+			'files.enableTrash': {
-+				'type': 'boolean',
-+				'default': true,
-+				'description': nls.localize('useTrash', "Moves files/folders to the OS trash (recycle bin on Windows) when deleting. Disabling this will delete files/folders permanently.")
-+			},
-+			'files.trimTrailingWhitespace': {
-+				'type': 'boolean',
-+				'default': false,
-+				'description': nls.localize('trimTrailingWhitespace', "When enabled, will trim trailing whitespace when saving a file."),
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
-+			},
-+			'files.insertFinalNewline': {
-+				'type': 'boolean',
-+				'default': false,
-+				'description': nls.localize('insertFinalNewline', "When enabled, insert a final new line at the end of the file when saving it."),
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
-+			},
-+			'files.trimFinalNewlines': {
-+				'type': 'boolean',
-+				'default': false,
-+				'description': nls.localize('trimFinalNewlines', "When enabled, will trim all new lines after the final new line at the end of the file when saving it."),
-+				scope: ConfigurationScope.LANGUAGE_OVERRIDABLE,
-+			},
-+			'files.autoSave': {
-+				'type': 'string',
-+				'enum': [AutoSaveConfiguration.OFF, AutoSaveConfiguration.AFTER_DELAY, AutoSaveConfiguration.ON_FOCUS_CHANGE, AutoSaveConfiguration.ON_WINDOW_CHANGE],
-+				'markdownEnumDescriptions': [
-+					nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.off' }, "A dirty editor is never automatically saved."),
-+					nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.afterDelay' }, "A dirty editor is automatically saved after the configured `#files.autoSaveDelay#`."),
-+					nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.onFocusChange' }, "A dirty editor is automatically saved when the editor loses focus."),
-+					nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.onWindowChange' }, "A dirty editor is automatically saved when the window loses focus.")
-+				],
-+				'default': platform.isWeb ? AutoSaveConfiguration.AFTER_DELAY : AutoSaveConfiguration.OFF,
-+				'markdownDescription': nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'autoSave' }, "Controls auto save of dirty editors. Read more about autosave [here](https://code.visualstudio.com/docs/editor/codebasics#_save-auto-save).", AutoSaveConfiguration.OFF, AutoSaveConfiguration.AFTER_DELAY, AutoSaveConfiguration.ON_FOCUS_CHANGE, AutoSaveConfiguration.ON_WINDOW_CHANGE, AutoSaveConfiguration.AFTER_DELAY)
-+			},
-+			'files.autoSaveDelay': {
-+				'type': 'number',
-+				'default': 1000,
-+				'markdownDescription': nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'autoSaveDelay' }, "Controls the delay in ms after which a dirty editor is saved automatically. Only applies when `#files.autoSave#` is set to `{0}`.", AutoSaveConfiguration.AFTER_DELAY)
-+			},
-+			'files.watcherExclude': {
-+				'type': 'object',
-+				'default': platform.isWindows /* https://github.com/microsoft/vscode/issues/23954 */ ? { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/*/**': true, '**/.hg/store/**': true } : { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/**': true, '**/.hg/store/**': true },
-+				'description': nls.localize('watcherExclude', "Configure glob patterns of file paths to exclude from file watching. Patterns must match on absolute paths (i.e. prefix with ** or the full path to match properly). Changing this setting requires a restart. When you experience Code consuming lots of CPU time on startup, you can exclude large folders to reduce the initial load."),
-+				'scope': ConfigurationScope.RESOURCE
-+			},
-+			'files.hotExit': hotExitConfiguration,
-+			'files.defaultLanguage': {
-+				'type': 'string',
-+				'markdownDescription': nls.localize('defaultLanguage', "The default language mode that is assigned to new files. If configured to `${activeEditorLanguage}`, will use the language mode of the currently active text editor if any.")
-+			},
-+			'files.maxMemoryForLargeFilesMB': {
-+				'type': 'number',
-+				'default': 4096,
-+				'markdownDescription': nls.localize('maxMemoryForLargeFilesMB', "Controls the memory available to VS Code after restart when trying to open large files. Same effect as specifying `--max-memory=NEWSIZE` on the command line."),
-+				included: platform.isNative
-+			},
-+			'files.restoreUndoStack': {
-+				'type': 'boolean',
-+				'description': nls.localize('files.restoreUndoStack', "Restore the undo stack when a file is reopened."),
-+				'default': true
-+			},
-+			'files.saveConflictResolution': {
-+				'type': 'string',
-+				'enum': [
-+					'askUser',
-+					'overwriteFileOnDisk'
-+				],
-+				'enumDescriptions': [
-+					nls.localize('askUser', "Will refuse to save and ask for resolving the save conflict manually."),
-+					nls.localize('overwriteFileOnDisk', "Will resolve the save conflict by overwriting the file on disk with the changes in the editor.")
-+				],
-+				'description': nls.localize('files.saveConflictResolution', "A save conflict can occur when a file is saved to disk that was changed by another program in the meantime. To prevent data loss, the user is asked to compare the changes in the editor with the version on disk. This setting should only be changed if you frequently encounter save conflict errors and may result in data loss if used without caution."),
-+				'default': 'askUser',
-+				'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
-+			},
-+			'files.simpleDialog.enable': {
-+				'type': 'boolean',
-+				'description': nls.localize('files.simpleDialog.enable', "Enables the simple file dialog. The simple file dialog replaces the system file dialog when enabled."),
-+				'default': false
- 			}
--		},
--		'files.encoding': {
--			'type': 'string',
--			'enum': Object.keys(SUPPORTED_ENCODINGS),
--			'default': 'utf8',
--			'description': nls.localize('encoding', "The default character set encoding to use when reading and writing files. This setting can also be configured per language."),
--			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE,
--			'enumDescriptions': Object.keys(SUPPORTED_ENCODINGS).map(key => SUPPORTED_ENCODINGS[key].labelLong)
--		},
--		'files.autoGuessEncoding': {
--			'type': 'boolean',
--			'default': false,
--			'description': nls.localize('autoGuessEncoding', "When enabled, the editor will attempt to guess the character set encoding when opening files. This setting can also be configured per language."),
--			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
--		},
--		'files.eol': {
--			'type': 'string',
--			'enum': [
--				'\n',
--				'\r\n',
--				'auto'
--			],
--			'enumDescriptions': [
--				nls.localize('eol.LF', "LF"),
--				nls.localize('eol.CRLF', "CRLF"),
--				nls.localize('eol.auto', "Uses operating system specific end of line character.")
--			],
--			'default': 'auto',
--			'description': nls.localize('eol', "The default end of line character."),
--			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
--		},
--		'files.enableTrash': {
--			'type': 'boolean',
--			'default': true,
--			'description': nls.localize('useTrash', "Moves files/folders to the OS trash (recycle bin on Windows) when deleting. Disabling this will delete files/folders permanently.")
--		},
--		'files.trimTrailingWhitespace': {
--			'type': 'boolean',
--			'default': false,
--			'description': nls.localize('trimTrailingWhitespace', "When enabled, will trim trailing whitespace when saving a file."),
--			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
--		},
--		'files.insertFinalNewline': {
--			'type': 'boolean',
--			'default': false,
--			'description': nls.localize('insertFinalNewline', "When enabled, insert a final new line at the end of the file when saving it."),
--			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
--		},
--		'files.trimFinalNewlines': {
--			'type': 'boolean',
--			'default': false,
--			'description': nls.localize('trimFinalNewlines', "When enabled, will trim all new lines after the final new line at the end of the file when saving it."),
--			scope: ConfigurationScope.LANGUAGE_OVERRIDABLE,
--		},
--		'files.autoSave': {
--			'type': 'string',
--			'enum': [AutoSaveConfiguration.OFF, AutoSaveConfiguration.AFTER_DELAY, AutoSaveConfiguration.ON_FOCUS_CHANGE, AutoSaveConfiguration.ON_WINDOW_CHANGE],
--			'markdownEnumDescriptions': [
--				nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.off' }, "A dirty editor is never automatically saved."),
--				nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.afterDelay' }, "A dirty editor is automatically saved after the configured `#files.autoSaveDelay#`."),
--				nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.onFocusChange' }, "A dirty editor is automatically saved when the editor loses focus."),
--				nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'files.autoSave.onWindowChange' }, "A dirty editor is automatically saved when the window loses focus.")
--			],
--			'default': platform.isWeb ? AutoSaveConfiguration.AFTER_DELAY : AutoSaveConfiguration.OFF,
--			'markdownDescription': nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'autoSave' }, "Controls auto save of dirty editors. Read more about autosave [here](https://code.visualstudio.com/docs/editor/codebasics#_save-auto-save).", AutoSaveConfiguration.OFF, AutoSaveConfiguration.AFTER_DELAY, AutoSaveConfiguration.ON_FOCUS_CHANGE, AutoSaveConfiguration.ON_WINDOW_CHANGE, AutoSaveConfiguration.AFTER_DELAY)
--		},
--		'files.autoSaveDelay': {
--			'type': 'number',
+@@ -309,7 +311,7 @@ configurationRegistry.registerConfiguration({
+ 		},
+ 		'files.autoSaveDelay': {
+ 			'type': 'number',
 -			'default': 1000,
--			'markdownDescription': nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'autoSaveDelay' }, "Controls the delay in ms after which a dirty editor is saved automatically. Only applies when `#files.autoSave#` is set to `{0}`.", AutoSaveConfiguration.AFTER_DELAY)
--		},
--		'files.watcherExclude': {
--			'type': 'object',
--			'default': platform.isWindows /* https://github.com/microsoft/vscode/issues/23954 */ ? { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/*/**': true, '**/.hg/store/**': true } : { '**/.git/objects/**': true, '**/.git/subtree-cache/**': true, '**/node_modules/**': true, '**/.hg/store/**': true },
--			'description': nls.localize('watcherExclude', "Configure glob patterns of file paths to exclude from file watching. Patterns must match on absolute paths (i.e. prefix with ** or the full path to match properly). Changing this setting requires a restart. When you experience Code consuming lots of CPU time on startup, you can exclude large folders to reduce the initial load."),
--			'scope': ConfigurationScope.RESOURCE
--		},
--		'files.hotExit': hotExitConfiguration,
--		'files.defaultLanguage': {
--			'type': 'string',
--			'markdownDescription': nls.localize('defaultLanguage', "The default language mode that is assigned to new files. If configured to `${activeEditorLanguage}`, will use the language mode of the currently active text editor if any.")
--		},
--		'files.maxMemoryForLargeFilesMB': {
--			'type': 'number',
--			'default': 4096,
--			'markdownDescription': nls.localize('maxMemoryForLargeFilesMB', "Controls the memory available to VS Code after restart when trying to open large files. Same effect as specifying `--max-memory=NEWSIZE` on the command line."),
--			included: platform.isNative
--		},
--		'files.restoreUndoStack': {
--			'type': 'boolean',
--			'description': nls.localize('files.restoreUndoStack', "Restore the undo stack when a file is reopened."),
--			'default': true
--		},
--		'files.saveConflictResolution': {
--			'type': 'string',
--			'enum': [
--				'askUser',
--				'overwriteFileOnDisk'
--			],
--			'enumDescriptions': [
--				nls.localize('askUser', "Will refuse to save and ask for resolving the save conflict manually."),
--				nls.localize('overwriteFileOnDisk', "Will resolve the save conflict by overwriting the file on disk with the changes in the editor.")
--			],
--			'description': nls.localize('files.saveConflictResolution', "A save conflict can occur when a file is saved to disk that was changed by another program in the meantime. To prevent data loss, the user is asked to compare the changes in the editor with the version on disk. This setting should only be changed if you frequently encounter save conflict errors and may result in data loss if used without caution."),
--			'default': 'askUser',
--			'scope': ConfigurationScope.LANGUAGE_OVERRIDABLE
--		},
--		'files.simpleDialog.enable': {
--			'type': 'boolean',
--			'description': nls.localize('files.simpleDialog.enable', "Enables the simple file dialog. The simple file dialog replaces the system file dialog when enabled."),
--			'default': false
- 		}
--	}
--});
-+	});
-+}
- 
- configurationRegistry.registerConfiguration({
- 	...editorConfigurationBaseNode,
++			'default': (wb_monaco.disabled?1000:200),
+ 			'markdownDescription': nls.localize({ comment: ['This is the description for a setting. Values surrounded by single quotes are not to be translated.'], key: 'autoSaveDelay' }, "Controls the delay in ms after which a dirty editor is saved automatically. Only applies when `#files.autoSave#` is set to `{0}`.", AutoSaveConfiguration.AFTER_DELAY)
+ 		},
+ 		'files.watcherExclude': {
 diff --git a/src/vs/workbench/contrib/files/common/editors/fileEditorInput.ts b/src/vs/workbench/contrib/files/common/editors/fileEditorInput.ts
 index 766b74cad5070ecf469c558ddce8170cd8375ad9..1d5de16f15105daac42eda3ad5dcb589e9635657 100644
 --- a/src/vs/workbench/contrib/files/common/editors/fileEditorInput.ts
@@ -5110,32 +4288,6 @@ index b39a5cbb9eadbc046144d2e76d26a9b0e950ddaa..3b4cc7274e149ee10dba0dbbb09cf259
  	});
  
  	require(['vs/workbench/services/extensions/worker/extensionHostWorker'], () => { }, err => console.error(err));
-diff --git a/src/vs/workbench/services/filesConfiguration/common/filesConfigurationService.ts b/src/vs/workbench/services/filesConfiguration/common/filesConfigurationService.ts
-index 1cc2b478326474c3fee3321fde0b59efd6fd4ba8..9b3c99053b60972b068bc0356d6aa7cfdd4d8016 100644
---- a/src/vs/workbench/services/filesConfiguration/common/filesConfigurationService.ts
-+++ b/src/vs/workbench/services/filesConfiguration/common/filesConfigurationService.ts
-@@ -15,6 +15,8 @@ import { equals } from 'vs/base/common/objects';
- import { URI } from 'vs/base/common/uri';
- import { isWeb } from 'vs/base/common/platform';
- 
-+declare var wb_monaco: any;
-+
- export const AutoSaveAfterShortDelayContext = new RawContextKey<boolean>('autoSaveAfterShortDelayContext', false);
- 
- export interface IAutoSaveConfiguration {
-@@ -111,10 +113,10 @@ export class FilesConfigurationService extends Disposable implements IFilesConfi
- 	protected onFilesConfigurationChange(configuration: IFilesConfiguration): void {
- 
- 		// Auto Save
--		const autoSaveMode = configuration?.files?.autoSave || FilesConfigurationService.DEFAULT_AUTO_SAVE_MODE;
-+		const autoSaveMode = (wb_monaco.disabled?configuration?.files?.autoSave:false) || FilesConfigurationService.DEFAULT_AUTO_SAVE_MODE;
- 		switch (autoSaveMode) {
- 			case AutoSaveConfiguration.AFTER_DELAY:
--				this.configuredAutoSaveDelay = configuration?.files?.autoSaveDelay;
-+				this.configuredAutoSaveDelay = (wb_monaco.disabled?configuration?.files?.autoSaveDelay:wb_monaco.autoSaveDelay);
- 				this.configuredAutoSaveOnFocusChange = false;
- 				this.configuredAutoSaveOnWindowChange = false;
- 				break;
 diff --git a/src/vs/workbench/services/localizations/electron-browser/localizationsService.ts b/src/vs/workbench/services/localizations/electron-browser/localizationsService.ts
 index d7aefde89c74bc6096d6e66c45368c8582594efa..9758f3bb96b48603251336e6a64e270ee89744f0 100644
 --- a/src/vs/workbench/services/localizations/electron-browser/localizationsService.ts
@@ -5208,40 +4360,6 @@ index a6a60d5883b64ef6e2fe2c7883171a8870ac8224..d8ae7c4c1f3e3969a216dbca773154bd
  						writeElevated: options.writeElevated
  					});
  
-diff --git a/src/vs/workbench/services/themes/browser/workbenchThemeService.ts b/src/vs/workbench/services/themes/browser/workbenchThemeService.ts
-index 36b7fd663c306a56fcc2e781c7e7cc8fbe1a9f4c..54f9f30d5d4982e88130ccbba7dc66b2d06952d3 100644
---- a/src/vs/workbench/services/themes/browser/workbenchThemeService.ts
-+++ b/src/vs/workbench/services/themes/browser/workbenchThemeService.ts
-@@ -39,6 +39,8 @@ import { IHostColorSchemeService } from 'vs/workbench/services/themes/common/hos
- import { CodiconStyles } from 'vs/base/browser/ui/codicons/codiconStyles';
- import { RunOnceScheduler } from 'vs/base/common/async';
- 
-+declare var wb_monaco: any;
-+
- // implementation
- 
- const DEFAULT_COLOR_THEME_ID = 'vs-dark vscode-theme-defaults-themes-dark_plus-json';
-diff --git a/src/vs/workbench/services/workingCopy/common/workingCopyFileService.ts b/src/vs/workbench/services/workingCopy/common/workingCopyFileService.ts
-index 6c5dc19408344c780e9080673ccdc7cf15c93387..08dc628029f900bd5d59188cb2ee7c3a11df3922 100644
---- a/src/vs/workbench/services/workingCopy/common/workingCopyFileService.ts
-+++ b/src/vs/workbench/services/workingCopy/common/workingCopyFileService.ts
-@@ -17,6 +17,8 @@ import { IProgress, IProgressStep } from 'vs/platform/progress/common/progress';
- import { WorkingCopyFileOperationParticipant } from 'vs/workbench/services/workingCopy/common/workingCopyFileOperationParticipant';
- import { VSBuffer, VSBufferReadable, VSBufferReadableStream } from 'vs/base/common/buffer';
- 
-+declare var wb_monaco: any;
-+
- export const IWorkingCopyFileService = createDecorator<IWorkingCopyFileService>('workingCopyFileService');
- 
- interface SourceTargetPair {
-@@ -348,6 +350,7 @@ export class WorkingCopyFileService extends Disposable implements IWorkingCopyFi
- 		// now actually delete from disk
- 		try {
- 			for (const resource of resources) {
-+				wb_monaco.invalidate(resource.path);
- 				await this.fileService.del(resource, options);
- 			}
- 		} catch (error) {
 diff --git a/src/vs/workbench/workbench.common.main.ts b/src/vs/workbench/workbench.common.main.ts
 index 5adea5d1a7255bac58da906bf93e6bc1419f773d..4aad9c30391813cad0a13e10c023c2673ad71612 100644
 --- a/src/vs/workbench/workbench.common.main.ts

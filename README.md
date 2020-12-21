@@ -4,14 +4,21 @@ Run [VS Code](https://github.com/Microsoft/vscode) on any machine anywhere and a
 
 Set up multiple user accounts. Each user may have their own preferences/settings.
 
-Collaborate with your team in real time.
+Collaborate with your team in real-time.
 
 ![Screenshot](./doc/assets/screenshot2.png)
 *Use the group icon in the statusbar to open the user list.
 
-## Getting Started
+## What is this?
 
-This is an extension of [code-server's](https://github.com/cdr/code-server) release of vscode.
+This is a modified version of [code-server's](https://github.com/cdr/code-server) release of vscode.
+You basically get the full vscode editor running in your browser, plus the added features mentioned above.
+
+The real-time collaboration feature adds functionality similar to what you find in Microsoft's Live Share extension. One big difference, however, is that you don't have to invite people to share. Once you turn on this feature, you get true peer to peer collaboration. Everyone who connects to the vscode server is connected to the same codebase as peers, and they may edit, collaborate, and generally come and go as they please. Another difference between this and Live Share is that there is, at the moment, no shared terminal or debugging session. 
+
+Unfortunately, this is NOT a vscode extension. This is a full port of vscode, and thus cannot be simply plugged in to an existing installation.
+
+## Getting Started
 
 Almost all the info that you need can be found on the [code-server](https://github.com/cdr/code-server) page. The only thing that will be covered here are the differences.
 

@@ -7,8 +7,7 @@
     resourceMap = new Map();
 
     var activeModel;
-    
-    wb_monaco.loadSet = new Set();
+        
     wb_monaco.currentGroup = 0;
     
     wb_monaco.modelsMap = new Map();
@@ -18,7 +17,8 @@
     wb_monaco.timeout1 = null;
 
     wb_monaco.setRange = function (range) {
-        monaco.Range = range;
+        if(!monaco.Range)
+            monaco.Range = range;
     };
 
     /*
@@ -31,9 +31,8 @@
     *
     */
     wb_monaco.connectEditorToFirepad = function (editor, resource, instanceID, options) {
-        log1("in connectEditorToFirepad: " + editor._id + ' ' + resource.path + ' ' + instanceID + ' ' + wb_monaco.loadSet.has(resource.path+instanceID))
-        if (!wb_monaco.loadSet.has(resource.path+instanceID) || wb_monaco.disabled || resource.scheme=='untitled') return;
-        wb_monaco.loadSet.delete(resource.path+instanceID);
+        log1("in connectEditorToFirepad: " + editor._id + ' ' + resource.path + ' ' + instanceID);
+        if (wb_monaco.disabled || resource.scheme=='untitled') return;
         var model = editor.getModel();
         if (model) {
             log2("has model");
@@ -316,7 +315,7 @@
     };
 
     wb_monaco.invalidate = async function(p){
-        log2("in invalidate");
+        log2("in invalidate: " + p);
         if(wb_monaco.disabled)
             return Promise.resolve(true);
         var ref = firebase.database().ref();
