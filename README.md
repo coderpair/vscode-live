@@ -109,4 +109,16 @@ go to the real time collaboration section, and turn it on there. Make sure you u
 
 Have fun!
 
+## Developing
+
+[vscode-live-dev](https://github.com/coderpair/vscode-live-dev)
+containes the full source code for the most recent release, and is where current development takes place.
+
+This repository contains the source in the form of patches that need to be applied to code-server. If you want to develop for a previous release of vscode-live (or code-server), the first thing you should do is head over to [code-server](https://github.com/cdr/code-server) and clone their repository. Next, find the patch (in the [patches](https://github.com/coderpair/vscode-live/tree/main/patches) folder) that matches the version of code-server that you cloned. For example, if you cloned v3.8.0 of code-server, you will need patch-3.8.0. Copy the patch file into the root directory of your code-server repository. From that same directory, issue the following git command:
+
+```git apply <patch>```
+
+where <patch> is the name of the patch file.
+
+
 
