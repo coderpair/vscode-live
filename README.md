@@ -118,7 +118,7 @@ This repository contains the source in the form of patches that need to be appli
 
 ```git apply <patch>```
 
-where <patch> is the name of the patch file.
+where `<patch>` is the name of the patch file.
 
 
 
