@@ -48,7 +48,20 @@ The `password` field is what you use to log in to code-server as the default use
 ## Setting up Firebase
 You will need a Firebase account to use the real time collaboration feature. You can [sign up here for a free account](https://console.firebase.google.com/).
 
-After signing up, edit the `config.yaml` so that it looks like this:
+After signing up, creat a project and navigate to "Realtime Database" under the "Build" tab on the left side of the website. Once there you should see button that says "Create Database", click on it and there will be a pop up asking what server you want your database stored on, for this to work you will have to select "us-central 1" as the server.<!-- correct me if I'm wrong here --> Once you have selected the server click next. Now you have to choose you security rules, it doesn't matter which opption you select because you will have to change it anyway. Now hit enable to enable your database. 
+
+In order to let vscode-live access your database you need to change the database rules. To do this navigate to the rules tab of your database page, once there chage the rules so they look like this:
+
+```yaml
+{
+  "rules": {
+    ".read": true,
+    ".write": true
+  }
+}
+```
+
+After setting up the database, edit the `config.yaml` so that it looks like this:
 
 ```yaml
 bind-addr: 127.0.0.1:8080
